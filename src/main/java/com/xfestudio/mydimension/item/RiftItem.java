@@ -2,7 +2,10 @@ package com.xfestudio.mydimension.item;
 
 import com.xfestudio.mydimension.world.ModDimensions;
 import net.minecraft.core.BlockPos;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
@@ -28,6 +31,14 @@ import java.util.function.Function;
 public class RiftItem extends Item {
     public static final double ETHEREAL_SURFACE_Y = 66.0D;
     public static final String IMPORTED_TO_ETHEREAL_MIND = "mydimension_imported_to_ethereal_mind";
+    private static final String RETURN_POINT_TAG = "ReturnPoint";
+    private static final String ETHEREAL_POINT_TAG = "EtherealPoint";
+    private static final String RETURN_DIMENSION_TAG = "Dimension";
+    private static final String RETURN_X_TAG = "X";
+    private static final String RETURN_Y_TAG = "Y";
+    private static final String RETURN_Z_TAG = "Z";
+    private static final String RETURN_Y_ROT_TAG = "YRot";
+    private static final String RETURN_X_ROT_TAG = "XRot";
 
     public RiftItem(Properties properties) {
         super(properties);
@@ -83,7 +94,10 @@ public class RiftItem extends Item {
     private static void teleport(ServerPlayer player) {
         ServerLevel currentLevel = player.serverLevel();
         boolean inEtherealMind = currentLevel.dimension().equals(ModDimensions.ETHEREAL_MIND);
-        ServerLevel targetLevel = player.getServer().getLevel(inEtherealMind ? Level.OVERWORLD : ModDimensions.ETHEREAL_MIND);
+        ItemStack stack = player.getMainHandItem();
+        ReturnPoint returnPoint = inEtherealMind ? readPoint(stack, RETURN_POINT_TAG) : null;
+        ReturnPoint etherealPoint = inEtherealMind ? null : readPoint(stack, ETHEREAL_POINT_TAG);
+        ServerLevel targetLevel = inEtherealMind ? getReturnLevel(player, returnPoint) : player.getServer().getLevel(ModDimensions.ETHEREAL_MIND);
 
         if (targetLevel == null) {
             player.displayClientMessage(Component.translatable("message.mydimension.missing_dimension"), true);
@@ -93,15 +107,38 @@ public class RiftItem extends Item {
         double x = player.getX();
         double z = player.getZ();
         double y = inEtherealMind ? overworldSpawnY(targetLevel) : ETHEREAL_SURFACE_Y;
+        float yRot = player.getYRot();
+        float xRot = player.getXRot();
 
         if (inEtherealMind) {
-            BlockPos spawn = targetLevel.getSharedSpawnPos();
-            x = spawn.getX() + 0.5D;
-            z = spawn.getZ() + 0.5D;
+            if (returnPoint != null) {
+                x = returnPoint.x();
+                y = returnPoint.y();
+                z = returnPoint.z();
+                yRot = returnPoint.yRot();
+                xRot = returnPoint.xRot();
+            } else {
+                BlockPos spawn = targetLevel.getSharedSpawnPos();
+                x = spawn.getX() + 0.5D;
+                z = spawn.getZ() + 0.5D;
+            }
+        } else {
+            writePoint(stack, RETURN_POINT_TAG, player);
+            if (etherealPoint != null) {
+                x = etherealPoint.x();
+                y = etherealPoint.y();
+                z = etherealPoint.z();
+                yRot = etherealPoint.yRot();
+                xRot = etherealPoint.xRot();
+            }
+        }
+
+        if (inEtherealMind) {
+            writePoint(stack, ETHEREAL_POINT_TAG, player);
         }
 
         targetLevel.playSound(null, player.blockPosition(), SoundEvents.ENDERMAN_TELEPORT, SoundSource.PLAYERS, 1.0F, 1.0F);
-        player.teleportTo(targetLevel, x, y, z, player.getYRot(), player.getXRot());
+        player.teleportTo(targetLevel, x, y, z, yRot, xRot);
         targetLevel.playSound(null, BlockPos.containing(x, y, z), SoundEvents.ENDERMAN_TELEPORT, SoundSource.PLAYERS, 1.0F, 1.0F);
     }
 
@@ -153,6 +190,53 @@ public class RiftItem extends Item {
         );
 
         return hit != null && hit.getEntity() instanceof LivingEntity living ? living : null;
+    }
+
+    private static void writePoint(ItemStack stack, String tagName, ServerPlayer player) {
+        CompoundTag point = new CompoundTag();
+        point.putString(RETURN_DIMENSION_TAG, player.level().dimension().location().toString());
+        point.putDouble(RETURN_X_TAG, player.getX());
+        point.putDouble(RETURN_Y_TAG, player.getY());
+        point.putDouble(RETURN_Z_TAG, player.getZ());
+        point.putFloat(RETURN_Y_ROT_TAG, player.getYRot());
+        point.putFloat(RETURN_X_ROT_TAG, player.getXRot());
+        stack.getOrCreateTag().put(tagName, point);
+    }
+
+    private static ReturnPoint readPoint(ItemStack stack, String tagName) {
+        CompoundTag tag = stack.getTag();
+        if (tag == null || !tag.contains(tagName, CompoundTag.TAG_COMPOUND)) {
+            return null;
+        }
+
+        CompoundTag point = tag.getCompound(tagName);
+        ResourceLocation dimension = ResourceLocation.tryParse(point.getString(RETURN_DIMENSION_TAG));
+        if (dimension == null) {
+            return null;
+        }
+
+        return new ReturnPoint(
+                ResourceKey.create(net.minecraft.core.registries.Registries.DIMENSION, dimension),
+                point.getDouble(RETURN_X_TAG),
+                point.getDouble(RETURN_Y_TAG),
+                point.getDouble(RETURN_Z_TAG),
+                point.getFloat(RETURN_Y_ROT_TAG),
+                point.getFloat(RETURN_X_ROT_TAG)
+        );
+    }
+
+    private static ServerLevel getReturnLevel(ServerPlayer player, ReturnPoint returnPoint) {
+        if (returnPoint != null) {
+            ServerLevel savedLevel = player.getServer().getLevel(returnPoint.dimension());
+            if (savedLevel != null) {
+                return savedLevel;
+            }
+        }
+
+        return player.getServer().getLevel(Level.OVERWORLD);
+    }
+
+    private record ReturnPoint(ResourceKey<Level> dimension, double x, double y, double z, float yRot, float xRot) {
     }
 
     private static class EtherealMindTeleporter implements ITeleporter {
