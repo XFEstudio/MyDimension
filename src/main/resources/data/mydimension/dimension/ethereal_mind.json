@@ -9,7 +9,7 @@
       "layers": [
         {
           "block": "minecraft:stone",
-          "height": 3
+          "height": 60
         },
         {
           "block": "minecraft:dirt",
