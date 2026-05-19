@@ -15,6 +15,8 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 
 public class RiftItem extends Item {
+    public static final double ETHEREAL_SURFACE_Y = 66.0D;
+
     public RiftItem(Properties properties) {
         super(properties);
     }
@@ -46,7 +48,7 @@ public class RiftItem extends Item {
 
         double x = player.getX();
         double z = player.getZ();
-        double y = inEtherealMind ? overworldSpawnY(targetLevel) : 10.0D;
+        double y = inEtherealMind ? overworldSpawnY(targetLevel) : ETHEREAL_SURFACE_Y;
 
         if (inEtherealMind) {
             BlockPos spawn = targetLevel.getSharedSpawnPos();
