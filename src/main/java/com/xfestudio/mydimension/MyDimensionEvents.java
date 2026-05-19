@@ -9,7 +9,6 @@ import net.minecraft.commands.arguments.selector.EntitySelector;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Mob;
-import net.minecraft.world.level.Level;
 import net.minecraftforge.event.CommandEvent;
 import net.minecraftforge.event.entity.EntityJoinLevelEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
@@ -20,7 +19,7 @@ import java.util.Locale;
 public class MyDimensionEvents {
     @SubscribeEvent
     public void preventMobsInEtherealMind(EntityJoinLevelEvent event) {
-        if (event.getLevel() instanceof Level level && level.dimension().equals(ModDimensions.ETHEREAL_MIND) && event.getEntity() instanceof Mob) {
+        if (event.getLevel().dimension().equals(ModDimensions.ETHEREAL_MIND) && event.getEntity() instanceof Mob) {
             event.setCanceled(true);
         }
     }
