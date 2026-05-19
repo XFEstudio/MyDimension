@@ -1,0 +1,19 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": [
+    " B ",
+    "B B",
+    " B "
+  ],
+  "key": {
+    "B": {
+      "item": "minecraft:black_glazed_terracotta"
+    }
+  },
+  "result": {
+    "item": "mydimension:rift",
+    "count": 1
+  },
+  "show_notification": true
+}

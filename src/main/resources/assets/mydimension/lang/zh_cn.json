@@ -1,0 +1,7 @@
+{
+  "item.mydimension.rift": "裂罅",
+  "dimension.mydimension.ethereal_mind": "空灵心境",
+  "message.mydimension.missing_dimension": "空灵心境维度未加载",
+  "message.mydimension.protected_tp": "%s 正处于空灵心境，无法被其他玩家传送",
+  "itemGroup.mydimension": "我的维度"
+}
