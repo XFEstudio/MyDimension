@@ -90,16 +90,16 @@ public class RiftItem extends Item {
         return level.getSharedSpawnPos().getY() + 1.0D;
     }
 
-    private static void sendToEtherealMind(ServerPlayer player, LivingEntity target, ItemStack stack) {
+    public static boolean sendToEtherealMind(ServerPlayer player, LivingEntity target, ItemStack stack) {
         ServerLevel targetLevel = player.getServer().getLevel(ModDimensions.ETHEREAL_MIND);
         if (targetLevel == null) {
             player.displayClientMessage(Component.translatable("message.mydimension.missing_dimension"), true);
-            return;
+            return false;
         }
 
         if (target.level().dimension().equals(ModDimensions.ETHEREAL_MIND)) {
             player.displayClientMessage(Component.translatable("message.mydimension.already_in_ethereal_mind"), true);
-            return;
+            return false;
         }
 
         target.getPersistentData().putBoolean(IMPORTED_TO_ETHEREAL_MIND, true);
@@ -109,6 +109,9 @@ public class RiftItem extends Item {
             moved.moveTo(player.getX(), ETHEREAL_SURFACE_Y, player.getZ(), moved.getYRot(), moved.getXRot());
             targetLevel.playSound(null, BlockPos.containing(moved.position()), SoundEvents.ENDERMAN_TELEPORT, SoundSource.NEUTRAL, 1.0F, 1.0F);
             player.getCooldowns().addCooldown(stack.getItem(), 20);
+            return true;
         }
+
+        return false;
     }
 }

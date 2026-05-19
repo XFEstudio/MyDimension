@@ -3,26 +3,45 @@ package com.xfestudio.mydimension;
 import com.mojang.brigadier.StringReader;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.xfestudio.mydimension.item.RiftItem;
+import com.xfestudio.mydimension.registry.ModItems;
 import com.xfestudio.mydimension.world.ModDimensions;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.arguments.EntityArgument;
 import net.minecraft.commands.arguments.selector.EntitySelector;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.MobSpawnType;
+import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.event.CommandEvent;
 import net.minecraftforge.event.entity.living.MobSpawnEvent;
+import net.minecraftforge.event.entity.player.PlayerInteractEvent;
 import net.minecraftforge.eventbus.api.Event;
+import net.minecraftforge.eventbus.api.EventPriority;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 
 import java.util.Collection;
 import java.util.Locale;
 
 public class MyDimensionEvents {
+    @SubscribeEvent(priority = EventPriority.HIGHEST, receiveCanceled = true)
+    public void sendMobToEtherealMind(PlayerInteractEvent.EntityInteract event) {
+        sendTargetToEtherealMind(event, event.getTarget());
+    }
+
+    @SubscribeEvent(priority = EventPriority.HIGHEST, receiveCanceled = true)
+    public void sendSpecificMobToEtherealMind(PlayerInteractEvent.EntityInteractSpecific event) {
+        sendTargetToEtherealMind(event, event.getTarget());
+    }
+
     @SubscribeEvent
     public void preventSpawnPlacementInEtherealMind(MobSpawnEvent.PositionCheck event) {
         if (event.getLevel().getLevel().dimension().equals(ModDimensions.ETHEREAL_MIND)
-                && !event.getEntity().getPersistentData().getBoolean(RiftItem.IMPORTED_TO_ETHEREAL_MIND)) {
+                && shouldBlockSpawn(event.getEntity(), event.getSpawnType())) {
             event.setResult(Event.Result.DENY);
         }
     }
@@ -31,7 +50,7 @@ public class MyDimensionEvents {
     public void preventNaturalSpawnsInEtherealMind(MobSpawnEvent.FinalizeSpawn event) {
         Mob entity = event.getEntity();
         if (event.getLevel().getLevel().dimension().equals(ModDimensions.ETHEREAL_MIND)
-                && !entity.getPersistentData().getBoolean(RiftItem.IMPORTED_TO_ETHEREAL_MIND)) {
+                && shouldBlockSpawn(entity, event.getSpawnType())) {
             event.setSpawnCancelled(true);
         }
     }
@@ -61,6 +80,36 @@ public class MyDimensionEvents {
     private static String firstWord(String input) {
         int space = input.indexOf(' ');
         return space < 0 ? input : input.substring(0, space);
+    }
+
+    private static void sendTargetToEtherealMind(PlayerInteractEvent event, Entity targetEntity) {
+        if (event.getHand() != InteractionHand.MAIN_HAND || !event.getEntity().isShiftKeyDown()) {
+            return;
+        }
+
+        if (!(event.getEntity() instanceof ServerPlayer player) || !(targetEntity instanceof LivingEntity target) || target instanceof ServerPlayer) {
+            return;
+        }
+
+        ItemStack stack = player.getMainHandItem();
+        if (!stack.is(ModItems.RIFT.get())) {
+            return;
+        }
+
+        event.setCancellationResult(InteractionResult.SUCCESS);
+        event.setCanceled(true);
+
+        if (!player.level().isClientSide()) {
+            RiftItem.sendToEtherealMind(player, target, stack);
+        }
+    }
+
+    private static boolean shouldBlockSpawn(Mob entity, MobSpawnType spawnType) {
+        return !entity.getPersistentData().getBoolean(RiftItem.IMPORTED_TO_ETHEREAL_MIND) && !isPlayerCreatedSpawn(spawnType);
+    }
+
+    private static boolean isPlayerCreatedSpawn(MobSpawnType spawnType) {
+        return spawnType == MobSpawnType.SPAWN_EGG || spawnType == MobSpawnType.BUCKET;
     }
 
     private static Collection<ServerPlayer> parseMentionedPlayers(CommandSourceStack source, String arguments) {
