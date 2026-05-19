@@ -3,92 +3,36 @@ package com.xfestudio.mydimension;
 import com.mojang.brigadier.StringReader;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.xfestudio.mydimension.item.RiftItem;
-import com.xfestudio.mydimension.registry.ModItems;
 import com.xfestudio.mydimension.world.ModDimensions;
-import net.minecraft.core.BlockPos;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.arguments.EntityArgument;
 import net.minecraft.commands.arguments.selector.EntitySelector;
 import net.minecraft.network.chat.Component;
-import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.sounds.SoundEvents;
-import net.minecraft.sounds.SoundSource;
-import net.minecraft.world.InteractionHand;
-import net.minecraft.world.InteractionResult;
-import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
-import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.level.Level;
 import net.minecraftforge.event.CommandEvent;
-import net.minecraftforge.event.entity.EntityJoinLevelEvent;
-import net.minecraftforge.event.entity.player.PlayerInteractEvent;
-import net.minecraftforge.eventbus.api.EventPriority;
+import net.minecraftforge.event.entity.living.MobSpawnEvent;
+import net.minecraftforge.eventbus.api.Event;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 
 import java.util.Collection;
 import java.util.Locale;
 
 public class MyDimensionEvents {
-    private static final String IMPORTED_TO_ETHEREAL_MIND = "mydimension_imported_to_ethereal_mind";
+    @SubscribeEvent
+    public void preventSpawnPlacementInEtherealMind(MobSpawnEvent.PositionCheck event) {
+        if (event.getLevel().getLevel().dimension().equals(ModDimensions.ETHEREAL_MIND)
+                && !event.getEntity().getPersistentData().getBoolean(RiftItem.IMPORTED_TO_ETHEREAL_MIND)) {
+            event.setResult(Event.Result.DENY);
+        }
+    }
 
     @SubscribeEvent
-    public void preventMobsInEtherealMind(EntityJoinLevelEvent event) {
-        Entity entity = event.getEntity();
-        if (event.getLevel().dimension().equals(ModDimensions.ETHEREAL_MIND)
-                && entity instanceof Mob
-                && !entity.getPersistentData().getBoolean(IMPORTED_TO_ETHEREAL_MIND)) {
-            event.setCanceled(true);
-        }
-    }
-
-    @SubscribeEvent(priority = EventPriority.HIGHEST)
-    public void sendMobToEtherealMind(PlayerInteractEvent.EntityInteract event) {
-        sendTargetToEtherealMind(event, event.getTarget());
-    }
-
-    @SubscribeEvent(priority = EventPriority.HIGHEST)
-    public void sendSpecificMobToEtherealMind(PlayerInteractEvent.EntityInteractSpecific event) {
-        sendTargetToEtherealMind(event, event.getTarget());
-    }
-
-    private static void sendTargetToEtherealMind(PlayerInteractEvent event, Entity targetEntity) {
-        if (event.getHand() != InteractionHand.MAIN_HAND || !event.getEntity().isShiftKeyDown()) {
-            return;
-        }
-
-        if (!(event.getEntity() instanceof ServerPlayer player) || !(targetEntity instanceof LivingEntity target) || target instanceof ServerPlayer) {
-            return;
-        }
-
-        ItemStack stack = player.getMainHandItem();
-        if (!stack.is(ModItems.RIFT.get())) {
-            return;
-        }
-
-        event.setCancellationResult(InteractionResult.SUCCESS);
-        event.setCanceled(true);
-
-        ServerLevel targetLevel = player.getServer().getLevel(ModDimensions.ETHEREAL_MIND);
-        if (targetLevel == null) {
-            player.displayClientMessage(Component.translatable("message.mydimension.missing_dimension"), true);
-            event.setCancellationResult(InteractionResult.FAIL);
-            return;
-        }
-
-        if (target.level().dimension().equals(ModDimensions.ETHEREAL_MIND)) {
-            player.displayClientMessage(Component.translatable("message.mydimension.already_in_ethereal_mind"), true);
-            return;
-        }
-
-        target.getPersistentData().putBoolean(IMPORTED_TO_ETHEREAL_MIND, true);
-        Entity moved = target.changeDimension(targetLevel);
-        if (moved != null) {
-            moved.getPersistentData().putBoolean(IMPORTED_TO_ETHEREAL_MIND, true);
-            moved.moveTo(player.getX(), RiftItem.ETHEREAL_SURFACE_Y, player.getZ(), moved.getYRot(), moved.getXRot());
-            targetLevel.playSound(null, BlockPos.containing(moved.position()), SoundEvents.ENDERMAN_TELEPORT, SoundSource.NEUTRAL, 1.0F, 1.0F);
-            player.getCooldowns().addCooldown(stack.getItem(), 20);
+    public void preventNaturalSpawnsInEtherealMind(MobSpawnEvent.FinalizeSpawn event) {
+        Mob entity = event.getEntity();
+        if (event.getLevel().getLevel().dimension().equals(ModDimensions.ETHEREAL_MIND)
+                && !entity.getPersistentData().getBoolean(RiftItem.IMPORTED_TO_ETHEREAL_MIND)) {
+            event.setSpawnCancelled(true);
         }
     }
 
@@ -105,14 +49,9 @@ public class MyDimensionEvents {
             return;
         }
 
-        Collection<ServerPlayer> targets = parseExplicitPlayerTargets(source, input.substring(command.length()).trim());
-        if (targets == null) {
-            return;
-        }
-
-        for (ServerPlayer target : targets) {
-            if (!target.getUUID().equals(sourcePlayer.getUUID()) && target.level().dimension().equals(ModDimensions.ETHEREAL_MIND)) {
-                source.sendFailure(Component.translatable("message.mydimension.protected_tp", target.getDisplayName()));
+        for (ServerPlayer mentionedPlayer : parseMentionedPlayers(source, input.substring(command.length()).trim())) {
+            if (!mentionedPlayer.getUUID().equals(sourcePlayer.getUUID()) && mentionedPlayer.level().dimension().equals(ModDimensions.ETHEREAL_MIND)) {
+                source.sendFailure(Component.translatable("message.mydimension.protected_tp", mentionedPlayer.getDisplayName()));
                 event.setCanceled(true);
                 return;
             }
@@ -124,17 +63,20 @@ public class MyDimensionEvents {
         return space < 0 ? input : input.substring(0, space);
     }
 
-    private static Collection<ServerPlayer> parseExplicitPlayerTargets(CommandSourceStack source, String arguments) {
+    private static Collection<ServerPlayer> parseMentionedPlayers(CommandSourceStack source, String arguments) {
+        java.util.Set<ServerPlayer> players = new java.util.HashSet<>();
         if (arguments.isBlank()) {
-            return null;
+            return players;
         }
 
-        try {
-            StringReader reader = new StringReader(arguments);
-            EntitySelector selector = EntityArgument.players().parse(reader);
-            return selector.findPlayers(source);
-        } catch (CommandSyntaxException ignored) {
-            return null;
+        for (String argument : arguments.split("\\s+")) {
+            try {
+                StringReader reader = new StringReader(argument);
+                EntitySelector selector = EntityArgument.players().parse(reader);
+                players.addAll(selector.findPlayers(source));
+            } catch (CommandSyntaxException ignored) {
+            }
         }
+        return players;
     }
 }
