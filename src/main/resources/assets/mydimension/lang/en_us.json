@@ -1,6 +1,7 @@
 {
   "item.mydimension.rift": "Rift",
   "dimension.mydimension.ethereal_mind": "Ethereal Mind",
+  "message.mydimension.already_in_ethereal_mind": "That mob is already in Ethereal Mind",
   "message.mydimension.missing_dimension": "The Ethereal Mind dimension is not loaded",
   "message.mydimension.protected_tp": "%s is in Ethereal Mind and cannot be teleported by another player"
 }

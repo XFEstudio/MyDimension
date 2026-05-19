@@ -24,6 +24,7 @@ import net.minecraft.world.level.Level;
 import net.minecraftforge.event.CommandEvent;
 import net.minecraftforge.event.entity.EntityJoinLevelEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
+import net.minecraftforge.eventbus.api.EventPriority;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 
 import java.util.Collection;
@@ -42,13 +43,22 @@ public class MyDimensionEvents {
         }
     }
 
-    @SubscribeEvent
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
     public void sendMobToEtherealMind(PlayerInteractEvent.EntityInteract event) {
+        sendTargetToEtherealMind(event, event.getTarget());
+    }
+
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public void sendSpecificMobToEtherealMind(PlayerInteractEvent.EntityInteractSpecific event) {
+        sendTargetToEtherealMind(event, event.getTarget());
+    }
+
+    private static void sendTargetToEtherealMind(PlayerInteractEvent event, Entity targetEntity) {
         if (event.getHand() != InteractionHand.MAIN_HAND || !event.getEntity().isShiftKeyDown()) {
             return;
         }
 
-        if (!(event.getEntity() instanceof ServerPlayer player) || !(event.getTarget() instanceof LivingEntity target) || target instanceof ServerPlayer) {
+        if (!(event.getEntity() instanceof ServerPlayer player) || !(targetEntity instanceof LivingEntity target) || target instanceof ServerPlayer) {
             return;
         }
 
@@ -57,11 +67,18 @@ public class MyDimensionEvents {
             return;
         }
 
+        event.setCancellationResult(InteractionResult.SUCCESS);
+        event.setCanceled(true);
+
         ServerLevel targetLevel = player.getServer().getLevel(ModDimensions.ETHEREAL_MIND);
         if (targetLevel == null) {
             player.displayClientMessage(Component.translatable("message.mydimension.missing_dimension"), true);
             event.setCancellationResult(InteractionResult.FAIL);
-            event.setCanceled(true);
+            return;
+        }
+
+        if (target.level().dimension().equals(ModDimensions.ETHEREAL_MIND)) {
+            player.displayClientMessage(Component.translatable("message.mydimension.already_in_ethereal_mind"), true);
             return;
         }
 
@@ -73,9 +90,6 @@ public class MyDimensionEvents {
             targetLevel.playSound(null, BlockPos.containing(moved.position()), SoundEvents.ENDERMAN_TELEPORT, SoundSource.NEUTRAL, 1.0F, 1.0F);
             player.getCooldowns().addCooldown(stack.getItem(), 20);
         }
-
-        event.setCancellationResult(InteractionResult.SUCCESS);
-        event.setCanceled(true);
     }
 
     @SubscribeEvent

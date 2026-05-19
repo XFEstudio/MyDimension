@@ -24,6 +24,10 @@ public class RiftItem extends Item {
     @Override
     public InteractionResultHolder<ItemStack> use(Level level, Player player, InteractionHand hand) {
         ItemStack stack = player.getItemInHand(hand);
+        if (player.isShiftKeyDown()) {
+            return InteractionResultHolder.pass(stack);
+        }
+
         if (level.isClientSide()) {
             return InteractionResultHolder.sidedSuccess(stack, true);
         }
