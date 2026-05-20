@@ -2,6 +2,7 @@ package com.xfestudio.mydimension;
 
 import com.mojang.logging.LogUtils;
 import com.xfestudio.mydimension.network.ModNetwork;
+import com.xfestudio.mydimension.registry.ModChunkGenerators;
 import com.xfestudio.mydimension.registry.ModEntities;
 import com.xfestudio.mydimension.registry.ModItems;
 import net.minecraftforge.common.MinecraftForge;
@@ -21,6 +22,7 @@ public class MyDimension {
 
         ModEntities.register(modEventBus);
         ModItems.register(modEventBus);
+        ModChunkGenerators.CHUNK_GENERATORS.register(modEventBus);
         modEventBus.addListener(ModItems::addCreative);
         modEventBus.addListener(this::commonSetup);
         MinecraftForge.EVENT_BUS.register(new MyDimensionEvents());

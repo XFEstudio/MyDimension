@@ -1,7 +1,7 @@
 {
   "type": "mydimension:mirror_mind",
   "generator": {
-    "type": "minecraft:noise",
+    "type": "mydimension:no_structure_noise",
     "biome_source": {
       "type": "minecraft:multi_noise",
       "preset": "minecraft:overworld"
