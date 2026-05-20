@@ -26,7 +26,7 @@ public class RiftActionScreen extends Screen {
     private static final int ANCHOR_COLOR = 0xFFD6A23E;
     private static final ResourceLocation RIFT_ICON = new ResourceLocation(MyDimension.MOD_ID, "textures/item/rift.png");
     private static final ResourceLocation PORTAL_ICON = new ResourceLocation("minecraft", "textures/block/nether_portal.png");
-    private static final ResourceLocation ANCHOR_ICON = new ResourceLocation(MyDimension.MOD_ID, "textures/entity/rift_anchor.png");
+    private static final ResourceLocation ANCHOR_ICON = new ResourceLocation(MyDimension.MOD_ID, "textures/gui/rift_anchor_icon.png");
 
     private boolean inMindDimension;
 
