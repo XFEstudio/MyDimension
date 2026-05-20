@@ -1,0 +1,26 @@
+{
+  "type": "mydimension:water_mind",
+  "generator": {
+    "type": "minecraft:flat",
+    "settings": {
+      "biome": "mydimension:water_mind",
+      "features": false,
+      "lakes": false,
+      "layers": [
+        {
+          "block": "minecraft:stone",
+          "height": 20
+        },
+        {
+          "block": "minecraft:gravel",
+          "height": 5
+        },
+        {
+          "block": "minecraft:water",
+          "height": 50
+        }
+      ],
+      "structure_overrides": []
+    }
+  }
+}

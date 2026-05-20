@@ -1,8 +1,18 @@
 {
   "item.mydimension.rift": "裂罅",
   "dimension.mydimension.ethereal_mind": "空灵心境",
+  "dimension.mydimension.mirror_mind": "镜之心境",
+  "dimension.mydimension.water_mind": "水之心境",
+  "dimension.mydimension.nature_mind": "自然心境",
+  "screen.mydimension.rift_actions": "裂罅",
+  "action.mydimension.ethereal_mind": "前往空灵心境",
+  "action.mydimension.mirror_mind": "前往镜之心境",
+  "action.mydimension.water_mind": "前往水之心境",
+  "action.mydimension.nature_mind": "前往自然心境",
+  "action.mydimension.send_mob": "传送生物",
   "message.mydimension.already_in_ethereal_mind": "该生物已经在空灵心境中",
-  "message.mydimension.missing_dimension": "空灵心境维度未加载",
-  "message.mydimension.protected_tp": "%s 正处于空灵心境，无法被其他玩家传送",
+  "message.mydimension.no_mob_target": "没有瞄准可传送的生物",
+  "message.mydimension.missing_dimension": "目标心境维度未加载",
+  "message.mydimension.protected_tp": "%s 正处于心境维度，无法被其他玩家传送",
   "itemGroup.mydimension": "我的维度"
 }

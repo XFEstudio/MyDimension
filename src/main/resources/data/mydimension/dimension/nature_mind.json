@@ -1,0 +1,26 @@
+{
+  "type": "mydimension:nature_mind",
+  "generator": {
+    "type": "minecraft:flat",
+    "settings": {
+      "biome": "mydimension:nature_mind",
+      "features": false,
+      "lakes": false,
+      "layers": [
+        {
+          "block": "minecraft:stone",
+          "height": 50
+        },
+        {
+          "block": "minecraft:dirt",
+          "height": 9
+        },
+        {
+          "block": "minecraft:grass_block",
+          "height": 1
+        }
+      ],
+      "structure_overrides": []
+    }
+  }
+}

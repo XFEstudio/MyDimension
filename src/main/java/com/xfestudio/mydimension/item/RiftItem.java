@@ -1,7 +1,9 @@
 package com.xfestudio.mydimension.item;
 
+import com.xfestudio.mydimension.client.RiftClient;
 import com.xfestudio.mydimension.world.ModDimensions;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceKey;
@@ -20,19 +22,23 @@ import net.minecraft.world.entity.projectile.ProjectileUtil;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.portal.PortalInfo;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.Vec3;
+import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.common.util.ITeleporter;
+import net.minecraftforge.fml.DistExecutor;
 
 import java.util.function.Function;
 
 public class RiftItem extends Item {
     public static final double ETHEREAL_SURFACE_Y = 66.0D;
     public static final String IMPORTED_TO_ETHEREAL_MIND = "mydimension_imported_to_ethereal_mind";
+    private static final String SELECTED_ACTION_TAG = "SelectedAction";
     private static final String RETURN_POINT_TAG = "ReturnPoint";
-    private static final String ETHEREAL_POINT_TAG = "EtherealPoint";
+    private static final String MIND_POINTS_TAG = "MindPoints";
     private static final String RETURN_DIMENSION_TAG = "Dimension";
     private static final String RETURN_X_TAG = "X";
     private static final String RETURN_Y_TAG = "Y";
@@ -49,17 +55,11 @@ public class RiftItem extends Item {
         ItemStack stack = player.getItemInHand(hand);
         if (player.isShiftKeyDown()) {
             if (level.isClientSide()) {
+                DistExecutor.unsafeRunWhenOn(Dist.CLIENT, () -> RiftClient::openActionScreen);
                 return InteractionResultHolder.sidedSuccess(stack, true);
             }
 
-            if (player instanceof ServerPlayer serverPlayer) {
-                LivingEntity target = findLookedAtLivingEntity(serverPlayer);
-                if (target != null && sendToEtherealMind(serverPlayer, target, stack)) {
-                    return InteractionResultHolder.consume(stack);
-                }
-            }
-
-            return InteractionResultHolder.pass(stack);
+            return InteractionResultHolder.consume(stack);
         }
 
         if (level.isClientSide()) {
@@ -67,7 +67,7 @@ public class RiftItem extends Item {
         }
 
         if (player instanceof ServerPlayer serverPlayer) {
-            teleport(serverPlayer);
+            executeSelectedAction(serverPlayer, stack);
             serverPlayer.getCooldowns().addCooldown(this, 40);
         }
 
@@ -76,7 +76,19 @@ public class RiftItem extends Item {
 
     @Override
     public InteractionResult interactLivingEntity(ItemStack stack, Player player, LivingEntity target, InteractionHand hand) {
-        if (hand != InteractionHand.MAIN_HAND || !player.isShiftKeyDown()) {
+        if (hand != InteractionHand.MAIN_HAND) {
+            return InteractionResult.PASS;
+        }
+
+        if (player.isShiftKeyDown()) {
+            if (player.level().isClientSide()) {
+                DistExecutor.unsafeRunWhenOn(Dist.CLIENT, () -> RiftClient::openActionScreen);
+                return InteractionResult.SUCCESS;
+            }
+            return InteractionResult.CONSUME;
+        }
+
+        if (getSelectedAction(stack) != RiftAction.SEND_MOB) {
             return InteractionResult.PASS;
         }
 
@@ -91,13 +103,39 @@ public class RiftItem extends Item {
         return InteractionResult.CONSUME;
     }
 
-    private static void teleport(ServerPlayer player) {
+    public static void setSelectedAction(ItemStack stack, RiftAction action) {
+        stack.getOrCreateTag().putString(SELECTED_ACTION_TAG, action.id());
+    }
+
+    public static RiftAction getSelectedAction(ItemStack stack) {
+        CompoundTag tag = stack.getTag();
+        if (tag == null || !tag.contains(SELECTED_ACTION_TAG)) {
+            return RiftAction.ETHEREAL_MIND;
+        }
+
+        return RiftAction.byId(tag.getString(SELECTED_ACTION_TAG));
+    }
+
+    private static void executeSelectedAction(ServerPlayer player, ItemStack stack) {
+        RiftAction action = getSelectedAction(stack);
+        if (action == RiftAction.SEND_MOB) {
+            LivingEntity target = findLookedAtLivingEntity(player);
+            if (target == null || !sendToEtherealMind(player, target, stack)) {
+                player.displayClientMessage(Component.translatable("message.mydimension.no_mob_target"), true);
+            }
+            return;
+        }
+
+        teleport(player, stack, action.targetDimension());
+    }
+
+    private static void teleport(ServerPlayer player, ItemStack stack, ResourceKey<Level> selectedDimension) {
         ServerLevel currentLevel = player.serverLevel();
-        boolean inEtherealMind = currentLevel.dimension().equals(ModDimensions.ETHEREAL_MIND);
-        ItemStack stack = player.getMainHandItem();
-        ReturnPoint returnPoint = inEtherealMind ? readPoint(stack, RETURN_POINT_TAG) : null;
-        ReturnPoint etherealPoint = inEtherealMind ? null : readPoint(stack, ETHEREAL_POINT_TAG);
-        ServerLevel targetLevel = inEtherealMind ? getReturnLevel(player, returnPoint) : player.getServer().getLevel(ModDimensions.ETHEREAL_MIND);
+        ResourceKey<Level> currentDimension = currentLevel.dimension();
+        boolean returningFromSelectedMind = currentDimension.equals(selectedDimension);
+        ReturnPoint returnPoint = returningFromSelectedMind ? readPoint(stack, RETURN_POINT_TAG) : null;
+        ReturnPoint mindPoint = returningFromSelectedMind ? null : readMindPoint(stack, selectedDimension);
+        ServerLevel targetLevel = returningFromSelectedMind ? getReturnLevel(player, returnPoint) : player.getServer().getLevel(selectedDimension);
 
         if (targetLevel == null) {
             player.displayClientMessage(Component.translatable("message.mydimension.missing_dimension"), true);
@@ -106,11 +144,11 @@ public class RiftItem extends Item {
 
         double x = player.getX();
         double z = player.getZ();
-        double y = inEtherealMind ? overworldSpawnY(targetLevel) : ETHEREAL_SURFACE_Y;
+        double y = returningFromSelectedMind ? overworldSpawnY(targetLevel) : safeEntryY(targetLevel, selectedDimension, x, z);
         float yRot = player.getYRot();
         float xRot = player.getXRot();
 
-        if (inEtherealMind) {
+        if (returningFromSelectedMind) {
             if (returnPoint != null) {
                 x = returnPoint.x();
                 y = returnPoint.y();
@@ -123,18 +161,23 @@ public class RiftItem extends Item {
                 z = spawn.getZ() + 0.5D;
             }
         } else {
-            writePoint(stack, RETURN_POINT_TAG, player);
-            if (etherealPoint != null) {
-                x = etherealPoint.x();
-                y = etherealPoint.y();
-                z = etherealPoint.z();
-                yRot = etherealPoint.yRot();
-                xRot = etherealPoint.xRot();
+            if (!ModDimensions.isMindDimension(currentDimension)) {
+                writePoint(stack, RETURN_POINT_TAG, player);
+            } else {
+                writeMindPoint(stack, currentDimension, player);
+            }
+
+            if (mindPoint != null) {
+                x = mindPoint.x();
+                y = mindPoint.y();
+                z = mindPoint.z();
+                yRot = mindPoint.yRot();
+                xRot = mindPoint.xRot();
             }
         }
 
-        if (inEtherealMind) {
-            writePoint(stack, ETHEREAL_POINT_TAG, player);
+        if (returningFromSelectedMind) {
+            writeMindPoint(stack, currentDimension, player);
         }
 
         targetLevel.playSound(null, player.blockPosition(), SoundEvents.ENDERMAN_TELEPORT, SoundSource.PLAYERS, 1.0F, 1.0F);
@@ -144,6 +187,17 @@ public class RiftItem extends Item {
 
     private static double overworldSpawnY(ServerLevel level) {
         return level.getSharedSpawnPos().getY() + 1.0D;
+    }
+
+    private static double safeEntryY(ServerLevel level, ResourceKey<Level> dimension, double x, double z) {
+        int blockX = (int) Math.floor(x);
+        int blockZ = (int) Math.floor(z);
+        int height = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, blockX, blockZ);
+        if (height > level.getMinBuildHeight()) {
+            return height + 1.0D;
+        }
+
+        return ModDimensions.entryHeight(dimension);
     }
 
     public static boolean sendToEtherealMind(ServerPlayer player, LivingEntity target, ItemStack stack) {
@@ -203,6 +257,23 @@ public class RiftItem extends Item {
         stack.getOrCreateTag().put(tagName, point);
     }
 
+    private static void writeMindPoint(ItemStack stack, ResourceKey<Level> dimension, ServerPlayer player) {
+        CompoundTag mindPoints = stack.getOrCreateTag().getCompound(MIND_POINTS_TAG);
+        writePointToTag(mindPoints, dimension.location().toString(), player);
+        stack.getOrCreateTag().put(MIND_POINTS_TAG, mindPoints);
+    }
+
+    private static void writePointToTag(CompoundTag parent, String tagName, ServerPlayer player) {
+        CompoundTag point = new CompoundTag();
+        point.putString(RETURN_DIMENSION_TAG, player.level().dimension().location().toString());
+        point.putDouble(RETURN_X_TAG, player.getX());
+        point.putDouble(RETURN_Y_TAG, player.getY());
+        point.putDouble(RETURN_Z_TAG, player.getZ());
+        point.putFloat(RETURN_Y_ROT_TAG, player.getYRot());
+        point.putFloat(RETURN_X_ROT_TAG, player.getXRot());
+        parent.put(tagName, point);
+    }
+
     private static ReturnPoint readPoint(ItemStack stack, String tagName) {
         CompoundTag tag = stack.getTag();
         if (tag == null || !tag.contains(tagName, CompoundTag.TAG_COMPOUND)) {
@@ -216,7 +287,30 @@ public class RiftItem extends Item {
         }
 
         return new ReturnPoint(
-                ResourceKey.create(net.minecraft.core.registries.Registries.DIMENSION, dimension),
+                ResourceKey.create(Registries.DIMENSION, dimension),
+                point.getDouble(RETURN_X_TAG),
+                point.getDouble(RETURN_Y_TAG),
+                point.getDouble(RETURN_Z_TAG),
+                point.getFloat(RETURN_Y_ROT_TAG),
+                point.getFloat(RETURN_X_ROT_TAG)
+        );
+    }
+
+    private static ReturnPoint readMindPoint(ItemStack stack, ResourceKey<Level> dimension) {
+        CompoundTag tag = stack.getTag();
+        if (tag == null || !tag.contains(MIND_POINTS_TAG, CompoundTag.TAG_COMPOUND)) {
+            return null;
+        }
+
+        CompoundTag mindPoints = tag.getCompound(MIND_POINTS_TAG);
+        String tagName = dimension.location().toString();
+        if (!mindPoints.contains(tagName, CompoundTag.TAG_COMPOUND)) {
+            return null;
+        }
+
+        CompoundTag point = mindPoints.getCompound(tagName);
+        return new ReturnPoint(
+                dimension,
                 point.getDouble(RETURN_X_TAG),
                 point.getDouble(RETURN_Y_TAG),
                 point.getDouble(RETURN_Z_TAG),

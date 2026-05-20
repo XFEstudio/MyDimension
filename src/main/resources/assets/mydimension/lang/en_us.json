@@ -1,7 +1,17 @@
 {
   "item.mydimension.rift": "Rift",
   "dimension.mydimension.ethereal_mind": "Ethereal Mind",
+  "dimension.mydimension.mirror_mind": "Mirror Mind",
+  "dimension.mydimension.water_mind": "Water Mind",
+  "dimension.mydimension.nature_mind": "Nature Mind",
+  "screen.mydimension.rift_actions": "Rift",
+  "action.mydimension.ethereal_mind": "Go to Ethereal Mind",
+  "action.mydimension.mirror_mind": "Go to Mirror Mind",
+  "action.mydimension.water_mind": "Go to Water Mind",
+  "action.mydimension.nature_mind": "Go to Nature Mind",
+  "action.mydimension.send_mob": "Send Mob",
   "message.mydimension.already_in_ethereal_mind": "That mob is already in Ethereal Mind",
-  "message.mydimension.missing_dimension": "The Ethereal Mind dimension is not loaded",
-  "message.mydimension.protected_tp": "%s is in Ethereal Mind and cannot be teleported by another player"
+  "message.mydimension.no_mob_target": "No mob target selected",
+  "message.mydimension.missing_dimension": "The target mind dimension is not loaded",
+  "message.mydimension.protected_tp": "%s is in a mind dimension and cannot be teleported by another player"
 }

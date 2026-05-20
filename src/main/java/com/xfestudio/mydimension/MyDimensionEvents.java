@@ -2,6 +2,7 @@ package com.xfestudio.mydimension;
 
 import com.mojang.brigadier.StringReader;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
+import com.xfestudio.mydimension.item.RiftAction;
 import com.xfestudio.mydimension.item.RiftItem;
 import com.xfestudio.mydimension.registry.ModItems;
 import com.xfestudio.mydimension.world.ModDimensions;
@@ -47,7 +48,7 @@ public class MyDimensionEvents {
 
     @SubscribeEvent
     public void preventSpawnPlacementInEtherealMind(MobSpawnEvent.PositionCheck event) {
-        if (event.getLevel().getLevel().dimension().equals(ModDimensions.ETHEREAL_MIND)
+        if (ModDimensions.isMindDimension(event.getLevel().getLevel().dimension())
                 && shouldBlockSpawn(event.getEntity(), event.getSpawnType())) {
             event.setResult(Event.Result.DENY);
         }
@@ -56,7 +57,7 @@ public class MyDimensionEvents {
     @SubscribeEvent
     public void preventNaturalSpawnsInEtherealMind(MobSpawnEvent.FinalizeSpawn event) {
         Mob entity = event.getEntity();
-        if (event.getLevel().getLevel().dimension().equals(ModDimensions.ETHEREAL_MIND)
+        if (ModDimensions.isMindDimension(event.getLevel().getLevel().dimension())
                 && shouldBlockSpawn(entity, event.getSpawnType())) {
             event.setSpawnCancelled(true);
         }
@@ -76,7 +77,7 @@ public class MyDimensionEvents {
         }
 
         for (ServerPlayer mentionedPlayer : parseMentionedPlayers(source, input.substring(command.length()).trim())) {
-            if (!mentionedPlayer.getUUID().equals(sourcePlayer.getUUID()) && mentionedPlayer.level().dimension().equals(ModDimensions.ETHEREAL_MIND)) {
+            if (!mentionedPlayer.getUUID().equals(sourcePlayer.getUUID()) && ModDimensions.isMindDimension(mentionedPlayer.level().dimension())) {
                 source.sendFailure(Component.translatable("message.mydimension.protected_tp", mentionedPlayer.getDisplayName()));
                 event.setCanceled(true);
                 return;
@@ -86,11 +87,11 @@ public class MyDimensionEvents {
 
     @SubscribeEvent
     public void finishSleepInEtherealMind(SleepFinishedTimeEvent event) {
-        if (!(event.getLevel() instanceof ServerLevel level) || !level.dimension().equals(ModDimensions.ETHEREAL_MIND)) {
+        if (!(event.getLevel() instanceof ServerLevel level) || !ModDimensions.isMindDimension(level.dimension())) {
             return;
         }
 
-        makeEtherealMorning(level, event.getNewTime());
+        makeMindMorning(level, event.getNewTime());
     }
 
     private static String firstWord(String input) {
@@ -98,15 +99,14 @@ public class MyDimensionEvents {
         return space < 0 ? input : input.substring(0, space);
     }
 
-    private static void makeEtherealMorning(ServerLevel etherealMind, long morning) {
-        ServerLevel overworld = etherealMind.getServer().overworld();
-        overworld.setDayTime(morning);
-        overworld.setWeatherParameters(CLEAR_WEATHER_DURATION, 0, false, false);
-        syncEtherealMindWeather(etherealMind);
-        syncEtherealMindTime(etherealMind);
+    private static void makeMindMorning(ServerLevel level, long morning) {
+        level.setDayTime(morning);
+        level.setWeatherParameters(CLEAR_WEATHER_DURATION, 0, false, false);
+        syncMindWeather(level);
+        syncMindTime(level);
     }
 
-    private static void syncEtherealMindWeather(ServerLevel level) {
+    private static void syncMindWeather(ServerLevel level) {
         level.setRainLevel(0.0F);
         level.setThunderLevel(0.0F);
         level.getServer().getPlayerList().broadcastAll(
@@ -123,7 +123,7 @@ public class MyDimensionEvents {
         );
     }
 
-    private static void syncEtherealMindTime(ServerLevel level) {
+    private static void syncMindTime(ServerLevel level) {
         level.getServer().getPlayerList().broadcastAll(
                 new ClientboundSetTimePacket(level.getGameTime(), level.getDayTime(), level.getGameRules().getBoolean(GameRules.RULE_DAYLIGHT)),
                 level.dimension()
@@ -131,7 +131,7 @@ public class MyDimensionEvents {
     }
 
     private static void sendTargetToEtherealMind(PlayerInteractEvent event, Entity targetEntity) {
-        if (event.getHand() != InteractionHand.MAIN_HAND || !event.getEntity().isShiftKeyDown()) {
+        if (event.getHand() != InteractionHand.MAIN_HAND || event.getEntity().isShiftKeyDown()) {
             return;
         }
 
@@ -140,7 +140,7 @@ public class MyDimensionEvents {
         }
 
         ItemStack stack = player.getMainHandItem();
-        if (!stack.is(ModItems.RIFT.get())) {
+        if (!stack.is(ModItems.RIFT.get()) || RiftItem.getSelectedAction(stack) != RiftAction.SEND_MOB) {
             return;
         }
 
