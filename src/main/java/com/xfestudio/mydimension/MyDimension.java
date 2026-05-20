@@ -2,6 +2,7 @@ package com.xfestudio.mydimension;
 
 import com.mojang.logging.LogUtils;
 import com.xfestudio.mydimension.network.ModNetwork;
+import com.xfestudio.mydimension.registry.ModEntities;
 import com.xfestudio.mydimension.registry.ModItems;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
@@ -18,6 +19,7 @@ public class MyDimension {
     public MyDimension() {
         IEventBus modEventBus = FMLJavaModLoadingContext.get().getModEventBus();
 
+        ModEntities.register(modEventBus);
         ModItems.register(modEventBus);
         modEventBus.addListener(ModItems::addCreative);
         modEventBus.addListener(this::commonSetup);

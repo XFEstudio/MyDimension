@@ -4,8 +4,10 @@ import com.mojang.brigadier.StringReader;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.xfestudio.mydimension.item.RiftAction;
 import com.xfestudio.mydimension.item.RiftItem;
+import com.xfestudio.mydimension.registry.ModEntities;
 import com.xfestudio.mydimension.registry.ModItems;
 import com.xfestudio.mydimension.world.ModDimensions;
+import com.xfestudio.mydimension.world.entity.RiftAnchorEntity;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.arguments.EntityArgument;
 import net.minecraft.commands.arguments.selector.EntitySelector;
@@ -24,9 +26,11 @@ import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.GameRules;
+import net.minecraft.tags.FluidTags;
 import net.minecraftforge.event.CommandEvent;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.living.MobSpawnEvent;
+import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
 import net.minecraftforge.event.level.SleepFinishedTimeEvent;
 import net.minecraftforge.eventbus.api.Event;
@@ -106,6 +110,7 @@ public class MyDimensionEvents {
 
         MinecraftServer server = event.getServer();
         for (ServerPlayer owner : server.getPlayerList().getPlayers()) {
+            refreshAnchorEntities(server, owner);
             for (RiftItem.AnchorPoint anchor : RiftItem.readAnchors(owner)) {
                 ServerLevel level = server.getLevel(anchor.dimension());
                 if (level == null || !ModDimensions.isMindDimension(level.dimension())) {
@@ -117,6 +122,62 @@ public class MyDimensionEvents {
                 level.sendParticles(ParticleTypes.SOUL_FIRE_FLAME, anchor.x(), anchor.y() + 0.15D, anchor.z(), 1, 0.18D, 0.08D, 0.18D, 0.0D);
             }
         }
+    }
+
+    @SubscribeEvent
+    public void keepMindPlayersBreathing(TickEvent.PlayerTickEvent event) {
+        if (event.phase != TickEvent.Phase.END || event.player.level().isClientSide() || !ModDimensions.isMindDimension(event.player.level().dimension())) {
+            return;
+        }
+
+        event.player.setAirSupply(event.player.getMaxAirSupply());
+    }
+
+    @SubscribeEvent
+    public void keepUnderwaterMiningFastInMind(PlayerEvent.BreakSpeed event) {
+        if (!ModDimensions.isMindDimension(event.getEntity().level().dimension()) || !event.getEntity().isEyeInFluid(FluidTags.WATER)) {
+            return;
+        }
+
+        event.setNewSpeed(event.getNewSpeed() * 5.0F);
+    }
+
+    private static void refreshAnchorEntities(MinecraftServer server, ServerPlayer owner) {
+        java.util.List<RiftItem.AnchorPoint> anchors = RiftItem.readAnchors(owner);
+        for (ServerLevel level : server.getAllLevels()) {
+            for (Entity entity : level.getAllEntities()) {
+                if (entity instanceof RiftAnchorEntity anchorEntity && owner.getUUID().equals(anchorEntity.owner()) && !matchesAnyAnchor(anchorEntity, anchors)) {
+                    anchorEntity.discard();
+                }
+            }
+        }
+
+        for (RiftItem.AnchorPoint anchor : anchors) {
+            ServerLevel level = server.getLevel(anchor.dimension());
+            if (level != null && ModDimensions.isMindDimension(level.dimension()) && !hasAnchorEntity(level, owner, anchor)) {
+                level.addFreshEntity(new RiftAnchorEntity(level, owner.getUUID(), anchor.x(), anchor.y(), anchor.z()));
+            }
+        }
+    }
+
+    private static boolean hasAnchorEntity(ServerLevel level, ServerPlayer owner, RiftItem.AnchorPoint anchor) {
+        for (RiftAnchorEntity entity : level.getEntities(ModEntities.RIFT_ANCHOR.get(), entity -> owner.getUUID().equals(entity.owner()) && samePosition(entity, anchor))) {
+            return true;
+        }
+        return false;
+    }
+
+    private static boolean matchesAnyAnchor(RiftAnchorEntity entity, java.util.List<RiftItem.AnchorPoint> anchors) {
+        for (RiftItem.AnchorPoint anchor : anchors) {
+            if (entity.level().dimension().equals(anchor.dimension()) && samePosition(entity, anchor)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean samePosition(Entity entity, RiftItem.AnchorPoint anchor) {
+        return entity.distanceToSqr(anchor.x(), anchor.y(), anchor.z()) < 0.04D;
     }
 
     private static String firstWord(String input) {
