@@ -9,6 +9,7 @@ import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.arguments.EntityArgument;
 import net.minecraft.commands.arguments.selector.EntitySelector;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
@@ -20,6 +21,7 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.event.CommandEvent;
 import net.minecraftforge.event.entity.living.MobSpawnEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
+import net.minecraftforge.event.level.SleepFinishedTimeEvent;
 import net.minecraftforge.eventbus.api.Event;
 import net.minecraftforge.eventbus.api.EventPriority;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
@@ -28,6 +30,8 @@ import java.util.Collection;
 import java.util.Locale;
 
 public class MyDimensionEvents {
+    private static final long DAY_LENGTH = 24000L;
+
     @SubscribeEvent(priority = EventPriority.HIGHEST, receiveCanceled = true)
     public void sendMobToEtherealMind(PlayerInteractEvent.EntityInteract event) {
         sendTargetToEtherealMind(event, event.getTarget());
@@ -75,6 +79,18 @@ public class MyDimensionEvents {
                 return;
             }
         }
+    }
+
+    @SubscribeEvent
+    public void finishSleepInEtherealMind(SleepFinishedTimeEvent event) {
+        if (!(event.getLevel() instanceof ServerLevel level) || !level.dimension().equals(ModDimensions.ETHEREAL_MIND)) {
+            return;
+        }
+
+        long dayTime = level.getDayTime();
+        long timeUntilMorning = DAY_LENGTH - (dayTime % DAY_LENGTH);
+        event.setTimeAddition(timeUntilMorning);
+        level.setWeatherParameters(6000, 0, false, false);
     }
 
     private static String firstWord(String input) {
