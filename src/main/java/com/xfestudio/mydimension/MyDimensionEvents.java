@@ -9,11 +9,13 @@ import com.xfestudio.mydimension.world.ModDimensions;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.arguments.EntityArgument;
 import net.minecraft.commands.arguments.selector.EntitySelector;
+import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.game.ClientboundGameEventPacket;
 import net.minecraft.network.protocol.game.ClientboundSetTimePacket;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.Entity;
@@ -23,6 +25,7 @@ import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.GameRules;
 import net.minecraftforge.event.CommandEvent;
+import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.living.MobSpawnEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
 import net.minecraftforge.event.level.SleepFinishedTimeEvent;
@@ -35,6 +38,7 @@ import java.util.Locale;
 
 public class MyDimensionEvents {
     private static final int CLEAR_WEATHER_DURATION = 6000;
+    private int anchorParticleTicker;
 
     @SubscribeEvent(priority = EventPriority.HIGHEST, receiveCanceled = true)
     public void sendMobToEtherealMind(PlayerInteractEvent.EntityInteract event) {
@@ -92,6 +96,27 @@ public class MyDimensionEvents {
         }
 
         makeMindMorning(level, event.getNewTime());
+    }
+
+    @SubscribeEvent
+    public void spawnAnchorParticles(TickEvent.ServerTickEvent event) {
+        if (event.phase != TickEvent.Phase.END || ++anchorParticleTicker % 10 != 0) {
+            return;
+        }
+
+        MinecraftServer server = event.getServer();
+        for (ServerPlayer owner : server.getPlayerList().getPlayers()) {
+            for (RiftItem.AnchorPoint anchor : RiftItem.readAnchors(owner)) {
+                ServerLevel level = server.getLevel(anchor.dimension());
+                if (level == null || !ModDimensions.isMindDimension(level.dimension())) {
+                    continue;
+                }
+
+                level.sendParticles(ParticleTypes.END_ROD, anchor.x(), anchor.y() + 0.75D, anchor.z(), 2, 0.25D, 0.45D, 0.25D, 0.01D);
+                level.sendParticles(ParticleTypes.ENCHANT, anchor.x(), anchor.y() + 1.0D, anchor.z(), 6, 0.55D, 0.65D, 0.55D, 0.02D);
+                level.sendParticles(ParticleTypes.SOUL_FIRE_FLAME, anchor.x(), anchor.y() + 0.15D, anchor.z(), 1, 0.18D, 0.08D, 0.18D, 0.0D);
+            }
+        }
     }
 
     private static String firstWord(String input) {

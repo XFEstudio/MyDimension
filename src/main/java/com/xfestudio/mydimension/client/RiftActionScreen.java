@@ -21,6 +21,7 @@ public class RiftActionScreen extends Screen {
     private static final int OUTER_RADIUS = 122;
     private static final int TRAVEL_COLOR = 0xFF3E8DB8;
     private static final int MOB_COLOR = 0xFF8B58C8;
+    private static final int ANCHOR_COLOR = 0xFFD6A23E;
 
     public RiftActionScreen() {
         super(Component.translatable("screen.mydimension.rift_actions"));
@@ -40,6 +41,8 @@ public class RiftActionScreen extends Screen {
         addActionButton(RiftAction.SEND_MOB_MIRROR, centerX, centerY, -45.0D, OUTER_RADIUS);
         addActionButton(RiftAction.SEND_MOB_WATER, centerX, centerY, 45.0D, OUTER_RADIUS);
         addActionButton(RiftAction.SEND_MOB_NATURE, centerX, centerY, 135.0D, OUTER_RADIUS);
+
+        addRenderableWidget(new ActionButton(centerX - BUTTON_WIDTH / 2, centerY + 33, RiftAction.SET_ANCHOR, getSelectedAction() == RiftAction.SET_ANCHOR));
     }
 
     @Override
@@ -65,11 +68,12 @@ public class RiftActionScreen extends Screen {
     private void renderCenterPanel(GuiGraphics graphics) {
         int centerX = width / 2;
         int centerY = height / 2;
-        graphics.fill(centerX - 52, centerY - 34, centerX + 52, centerY + 34, 0xAA070A10);
-        drawBorder(graphics, centerX - 52, centerY - 34, centerX + 52, centerY + 34, 0xFF85D6F7);
+        fillRoundedRect(graphics, centerX - 56, centerY - 40, centerX + 56, centerY + 62, 5, 0xAA070A10);
+        drawRoundedBorder(graphics, centerX - 56, centerY - 40, centerX + 56, centerY + 62, 5, 0xFF85D6F7);
         graphics.drawCenteredString(font, title, centerX, centerY - 23, 0xFFEAFBFF);
         graphics.drawCenteredString(font, Component.translatable("screen.mydimension.rift_actions.travel"), centerX, centerY - 5, 0xFF9DDBFF);
         graphics.drawCenteredString(font, Component.translatable("screen.mydimension.rift_actions.mob"), centerX, centerY + 10, 0xFFD0B6FF);
+        graphics.drawCenteredString(font, Component.translatable("screen.mydimension.rift_actions.anchor"), centerX, centerY + 25, 0xFFFFE0A3);
     }
 
     private void renderRingHints(GuiGraphics graphics) {
@@ -107,6 +111,25 @@ public class RiftActionScreen extends Screen {
         graphics.fill(right - 1, top, right, bottom, color);
     }
 
+    private static void fillRoundedRect(GuiGraphics graphics, int left, int top, int right, int bottom, int radius, int color) {
+        graphics.fill(left + radius, top, right - radius, bottom, color);
+        graphics.fill(left, top + radius, right, bottom - radius, color);
+        graphics.fill(left + 1, top + 1, right - 1, top + radius, color);
+        graphics.fill(left + 1, bottom - radius, right - 1, bottom - 1, color);
+        graphics.fill(left + radius - 1, top + 1, right - radius + 1, bottom - 1, color);
+    }
+
+    private static void drawRoundedBorder(GuiGraphics graphics, int left, int top, int right, int bottom, int radius, int color) {
+        graphics.fill(left + radius, top, right - radius, top + 1, color);
+        graphics.fill(left + radius, bottom - 1, right - radius, bottom, color);
+        graphics.fill(left, top + radius, left + 1, bottom - radius, color);
+        graphics.fill(right - 1, top + radius, right, bottom - radius, color);
+        graphics.fill(left + 1, top + 1, left + radius, top + 2, color);
+        graphics.fill(right - radius, top + 1, right - 1, top + 2, color);
+        graphics.fill(left + 1, bottom - 2, left + radius, bottom - 1, color);
+        graphics.fill(right - radius, bottom - 2, right - 1, bottom - 1, color);
+    }
+
     private static void drawDiamond(GuiGraphics graphics, int centerX, int centerY, int radius, int color) {
         graphics.fill(centerX - 1, centerY - radius, centerX + 1, centerY - radius + 2, color);
         graphics.fill(centerX + radius - 1, centerY - 1, centerX + radius + 1, centerY + 1, color);
@@ -130,14 +153,15 @@ public class RiftActionScreen extends Screen {
             int top = getY();
             int right = left + getWidth();
             int bottom = top + getHeight();
-            int base = action.sendsMob() ? MOB_COLOR : TRAVEL_COLOR;
+            int base = action == RiftAction.SET_ANCHOR ? ANCHOR_COLOR : (action.sendsMob() ? MOB_COLOR : TRAVEL_COLOR);
             int fill = withAlpha(base, isHoveredOrFocused() ? 226 : 174);
-            int edge = selected ? 0xFFFFF4A8 : (action.sendsMob() ? 0xFFD8C1FF : 0xFFB8F0FF);
+            int edge = selected ? 0xFFFFF4A8 : (action == RiftAction.SET_ANCHOR ? 0xFFFFE0A3 : (action.sendsMob() ? 0xFFD8C1FF : 0xFFB8F0FF));
 
-            graphics.fillGradient(left, top, right, bottom, fill, darken(fill));
-            drawBorder(graphics, left, top, right, bottom, edge);
+            fillRoundedRect(graphics, left, top, right, bottom, 5, darken(fill));
+            fillRoundedRect(graphics, left + 1, top + 1, right - 1, bottom - 1, 4, fill);
+            drawRoundedBorder(graphics, left, top, right, bottom, 5, edge);
             if (selected) {
-                graphics.fill(left + 2, top + 2, left + 5, bottom - 2, 0xFFFFF4A8);
+                fillRoundedRect(graphics, left + 3, top + 4, left + 7, bottom - 4, 2, 0xFFFFF4A8);
             }
 
             int textColor = isHoveredOrFocused() ? 0xFFFFFFFF : 0xFFEAFBFF;

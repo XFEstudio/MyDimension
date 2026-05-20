@@ -15,7 +15,8 @@ public enum RiftAction {
     SEND_MOB_ETHEREAL("send_mob_ethereal", "action.mydimension.send_mob_ethereal", ModDimensions.ETHEREAL_MIND, true),
     SEND_MOB_MIRROR("send_mob_mirror", "action.mydimension.send_mob_mirror", ModDimensions.MIRROR_MIND, true),
     SEND_MOB_WATER("send_mob_water", "action.mydimension.send_mob_water", ModDimensions.WATER_MIND, true),
-    SEND_MOB_NATURE("send_mob_nature", "action.mydimension.send_mob_nature", ModDimensions.NATURE_MIND, true);
+    SEND_MOB_NATURE("send_mob_nature", "action.mydimension.send_mob_nature", ModDimensions.NATURE_MIND, true),
+    SET_ANCHOR("set_anchor", "action.mydimension.set_anchor", null, false);
 
     private final String id;
     private final String translationKey;

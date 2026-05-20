@@ -39,6 +39,7 @@ public class RiftItem extends Item {
     private static final String SELECTED_ACTION_TAG = "SelectedAction";
     private static final String RETURN_POINT_TAG = "ReturnPoint";
     private static final String MIND_POINTS_TAG = "MindPoints";
+    private static final String PLAYER_ANCHORS_TAG = "mydimension.RiftAnchors";
     private static final String RETURN_DIMENSION_TAG = "Dimension";
     private static final String RETURN_X_TAG = "X";
     private static final String RETURN_Y_TAG = "Y";
@@ -119,6 +120,11 @@ public class RiftItem extends Item {
 
     private static void executeSelectedAction(ServerPlayer player, ItemStack stack) {
         RiftAction action = getSelectedAction(stack);
+        if (action == RiftAction.SET_ANCHOR) {
+            setAnchor(player);
+            return;
+        }
+
         if (action.sendsMob()) {
             LivingEntity target = findLookedAtLivingEntity(player);
             if (target == null || !sendToMind(player, target, stack, action.targetDimension())) {
@@ -217,7 +223,11 @@ public class RiftItem extends Item {
         target.stopRiding();
         target.ejectPassengers();
 
-        Entity moved = target.changeDimension(targetLevel, new EtherealMindTeleporter(player.getX(), safeEntryY(targetLevel, targetDimension, player.getX(), player.getZ()), player.getZ()));
+        AnchorPoint anchor = readAnchor(player, targetDimension);
+        double targetX = anchor != null ? anchor.x() : player.getX();
+        double targetY = anchor != null ? anchor.y() : safeEntryY(targetLevel, targetDimension, player.getX(), player.getZ());
+        double targetZ = anchor != null ? anchor.z() : player.getZ();
+        Entity moved = target.changeDimension(targetLevel, new EtherealMindTeleporter(targetX, targetY, targetZ));
         if (moved != null) {
             moved.getPersistentData().putBoolean(IMPORTED_TO_ETHEREAL_MIND, true);
             targetLevel.playSound(null, BlockPos.containing(moved.position()), SoundEvents.ENDERMAN_TELEPORT, SoundSource.NEUTRAL, 1.0F, 1.0F);
@@ -245,6 +255,63 @@ public class RiftItem extends Item {
         );
 
         return hit != null && hit.getEntity() instanceof LivingEntity living ? living : null;
+    }
+
+    private static void setAnchor(ServerPlayer player) {
+        ResourceKey<Level> dimension = player.level().dimension();
+        if (!ModDimensions.isMindDimension(dimension)) {
+            player.displayClientMessage(Component.translatable("message.mydimension.anchor_only_mind"), true);
+            return;
+        }
+
+        CompoundTag anchors = player.getPersistentData().getCompound(PLAYER_ANCHORS_TAG);
+        CompoundTag anchor = new CompoundTag();
+        anchor.putString(RETURN_DIMENSION_TAG, dimension.location().toString());
+        anchor.putDouble(RETURN_X_TAG, player.getX());
+        anchor.putDouble(RETURN_Y_TAG, player.getY());
+        anchor.putDouble(RETURN_Z_TAG, player.getZ());
+        anchors.put(dimension.location().toString(), anchor);
+        player.getPersistentData().put(PLAYER_ANCHORS_TAG, anchors);
+        player.displayClientMessage(Component.translatable("message.mydimension.anchor_set"), true);
+    }
+
+    public static AnchorPoint readAnchor(ServerPlayer player, ResourceKey<Level> dimension) {
+        CompoundTag anchors = player.getPersistentData().getCompound(PLAYER_ANCHORS_TAG);
+        String tagName = dimension.location().toString();
+        if (!anchors.contains(tagName, CompoundTag.TAG_COMPOUND)) {
+            return null;
+        }
+
+        CompoundTag anchor = anchors.getCompound(tagName);
+        ResourceLocation location = ResourceLocation.tryParse(anchor.getString(RETURN_DIMENSION_TAG));
+        if (location == null) {
+            return null;
+        }
+
+        return new AnchorPoint(
+                ResourceKey.create(Registries.DIMENSION, location),
+                anchor.getDouble(RETURN_X_TAG),
+                anchor.getDouble(RETURN_Y_TAG),
+                anchor.getDouble(RETURN_Z_TAG)
+        );
+    }
+
+    public static java.util.List<AnchorPoint> readAnchors(ServerPlayer player) {
+        java.util.List<AnchorPoint> anchors = new java.util.ArrayList<>();
+        CompoundTag tag = player.getPersistentData().getCompound(PLAYER_ANCHORS_TAG);
+        for (String key : tag.getAllKeys()) {
+            ResourceLocation location = ResourceLocation.tryParse(key);
+            if (location != null && tag.contains(key, CompoundTag.TAG_COMPOUND)) {
+                CompoundTag anchor = tag.getCompound(key);
+                anchors.add(new AnchorPoint(
+                        ResourceKey.create(Registries.DIMENSION, location),
+                        anchor.getDouble(RETURN_X_TAG),
+                        anchor.getDouble(RETURN_Y_TAG),
+                        anchor.getDouble(RETURN_Z_TAG)
+                ));
+            }
+        }
+        return anchors;
     }
 
     private static void writePoint(ItemStack stack, String tagName, ServerPlayer player) {
@@ -332,6 +399,9 @@ public class RiftItem extends Item {
     }
 
     private record ReturnPoint(ResourceKey<Level> dimension, double x, double y, double z, float yRot, float xRot) {
+    }
+
+    public record AnchorPoint(ResourceKey<Level> dimension, double x, double y, double z) {
     }
 
     private static class EtherealMindTeleporter implements ITeleporter {

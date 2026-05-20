@@ -7,6 +7,7 @@
   "screen.mydimension.rift_actions": "Rift",
   "screen.mydimension.rift_actions.travel": "Inner: Travel",
   "screen.mydimension.rift_actions.mob": "Outer: Send Mob",
+  "screen.mydimension.rift_actions.anchor": "Center: Set Anchor",
   "action.mydimension.ethereal_mind": "Go to Ethereal Mind",
   "action.mydimension.mirror_mind": "Go to Mirror Mind",
   "action.mydimension.water_mind": "Go to Water Mind",
@@ -15,7 +16,10 @@
   "action.mydimension.send_mob_mirror": "Send Mob to Mirror",
   "action.mydimension.send_mob_water": "Send Mob to Water",
   "action.mydimension.send_mob_nature": "Send Mob to Nature",
+  "action.mydimension.set_anchor": "Set Teleport Anchor",
   "message.mydimension.already_in_target_mind": "That mob is already in the target mind dimension",
+  "message.mydimension.anchor_only_mind": "Teleport anchors can only be set in mind dimensions",
+  "message.mydimension.anchor_set": "Teleport anchor set for this mind dimension",
   "message.mydimension.no_mob_target": "No mob target selected",
   "message.mydimension.missing_dimension": "The target mind dimension is not loaded",
   "message.mydimension.protected_tp": "%s is in a mind dimension and cannot be teleported by another player"
