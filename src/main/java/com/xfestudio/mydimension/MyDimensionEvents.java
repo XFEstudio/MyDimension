@@ -9,6 +9,8 @@ import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.arguments.EntityArgument;
 import net.minecraft.commands.arguments.selector.EntitySelector;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.protocol.game.ClientboundGameEventPacket;
+import net.minecraft.network.protocol.game.ClientboundSetTimePacket;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
@@ -18,10 +20,10 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.GameRules;
 import net.minecraftforge.event.CommandEvent;
 import net.minecraftforge.event.entity.living.MobSpawnEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
-import net.minecraftforge.event.entity.player.PlayerWakeUpEvent;
 import net.minecraftforge.event.level.SleepFinishedTimeEvent;
 import net.minecraftforge.eventbus.api.Event;
 import net.minecraftforge.eventbus.api.EventPriority;
@@ -31,7 +33,7 @@ import java.util.Collection;
 import java.util.Locale;
 
 public class MyDimensionEvents {
-    private static final long DAY_LENGTH = 24000L;
+    private static final int CLEAR_WEATHER_DURATION = 6000;
 
     @SubscribeEvent(priority = EventPriority.HIGHEST, receiveCanceled = true)
     public void sendMobToEtherealMind(PlayerInteractEvent.EntityInteract event) {
@@ -88,16 +90,7 @@ public class MyDimensionEvents {
             return;
         }
 
-        makeEtherealMorning(level);
-    }
-
-    @SubscribeEvent
-    public void wakeUpInEtherealMind(PlayerWakeUpEvent event) {
-        if (!event.updateLevel() || !(event.getEntity() instanceof ServerPlayer player) || !player.level().dimension().equals(ModDimensions.ETHEREAL_MIND)) {
-            return;
-        }
-
-        makeEtherealMorning(player.serverLevel());
+        makeEtherealMorning(level, event.getNewTime());
     }
 
     private static String firstWord(String input) {
@@ -105,11 +98,36 @@ public class MyDimensionEvents {
         return space < 0 ? input : input.substring(0, space);
     }
 
-    private static void makeEtherealMorning(ServerLevel level) {
-        long dayTime = level.getDayTime();
-        long morning = dayTime - (dayTime % DAY_LENGTH) + DAY_LENGTH;
-        level.setDayTime(morning);
-        level.setWeatherParameters(6000, 0, false, false);
+    private static void makeEtherealMorning(ServerLevel etherealMind, long morning) {
+        ServerLevel overworld = etherealMind.getServer().overworld();
+        overworld.setDayTime(morning);
+        overworld.setWeatherParameters(CLEAR_WEATHER_DURATION, 0, false, false);
+        syncEtherealMindWeather(etherealMind);
+        syncEtherealMindTime(etherealMind);
+    }
+
+    private static void syncEtherealMindWeather(ServerLevel level) {
+        level.setRainLevel(0.0F);
+        level.setThunderLevel(0.0F);
+        level.getServer().getPlayerList().broadcastAll(
+                new ClientboundGameEventPacket(ClientboundGameEventPacket.STOP_RAINING, 0.0F),
+                level.dimension()
+        );
+        level.getServer().getPlayerList().broadcastAll(
+                new ClientboundGameEventPacket(ClientboundGameEventPacket.RAIN_LEVEL_CHANGE, 0.0F),
+                level.dimension()
+        );
+        level.getServer().getPlayerList().broadcastAll(
+                new ClientboundGameEventPacket(ClientboundGameEventPacket.THUNDER_LEVEL_CHANGE, 0.0F),
+                level.dimension()
+        );
+    }
+
+    private static void syncEtherealMindTime(ServerLevel level) {
+        level.getServer().getPlayerList().broadcastAll(
+                new ClientboundSetTimePacket(level.getGameTime(), level.getDayTime(), level.getGameRules().getBoolean(GameRules.RULE_DAYLIGHT)),
+                level.dimension()
+        );
     }
 
     private static void sendTargetToEtherealMind(PlayerInteractEvent event, Entity targetEntity) {
