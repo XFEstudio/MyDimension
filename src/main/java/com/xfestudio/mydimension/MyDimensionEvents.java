@@ -140,7 +140,8 @@ public class MyDimensionEvents {
         }
 
         ItemStack stack = player.getMainHandItem();
-        if (!stack.is(ModItems.RIFT.get()) || RiftItem.getSelectedAction(stack) != RiftAction.SEND_MOB) {
+        RiftAction action = RiftItem.getSelectedAction(stack);
+        if (!stack.is(ModItems.RIFT.get()) || !action.sendsMob()) {
             return;
         }
 
@@ -148,7 +149,7 @@ public class MyDimensionEvents {
         event.setCanceled(true);
 
         if (!player.level().isClientSide()) {
-            RiftItem.sendToEtherealMind(player, target, stack);
+            RiftItem.sendToMind(player, target, stack, action.targetDimension());
         }
     }
 

@@ -88,7 +88,8 @@ public class RiftItem extends Item {
             return InteractionResult.CONSUME;
         }
 
-        if (getSelectedAction(stack) != RiftAction.SEND_MOB) {
+        RiftAction action = getSelectedAction(stack);
+        if (!action.sendsMob()) {
             return InteractionResult.PASS;
         }
 
@@ -97,7 +98,7 @@ public class RiftItem extends Item {
         }
 
         if (player instanceof ServerPlayer serverPlayer) {
-            sendToEtherealMind(serverPlayer, target, stack);
+            sendToMind(serverPlayer, target, stack, action.targetDimension());
         }
 
         return InteractionResult.CONSUME;
@@ -118,9 +119,9 @@ public class RiftItem extends Item {
 
     private static void executeSelectedAction(ServerPlayer player, ItemStack stack) {
         RiftAction action = getSelectedAction(stack);
-        if (action == RiftAction.SEND_MOB) {
+        if (action.sendsMob()) {
             LivingEntity target = findLookedAtLivingEntity(player);
-            if (target == null || !sendToEtherealMind(player, target, stack)) {
+            if (target == null || !sendToMind(player, target, stack, action.targetDimension())) {
                 player.displayClientMessage(Component.translatable("message.mydimension.no_mob_target"), true);
             }
             return;
@@ -200,15 +201,15 @@ public class RiftItem extends Item {
         return ModDimensions.entryHeight(dimension);
     }
 
-    public static boolean sendToEtherealMind(ServerPlayer player, LivingEntity target, ItemStack stack) {
-        ServerLevel targetLevel = player.getServer().getLevel(ModDimensions.ETHEREAL_MIND);
+    public static boolean sendToMind(ServerPlayer player, LivingEntity target, ItemStack stack, ResourceKey<Level> targetDimension) {
+        ServerLevel targetLevel = player.getServer().getLevel(targetDimension);
         if (targetLevel == null) {
             player.displayClientMessage(Component.translatable("message.mydimension.missing_dimension"), true);
             return false;
         }
 
-        if (target.level().dimension().equals(ModDimensions.ETHEREAL_MIND)) {
-            player.displayClientMessage(Component.translatable("message.mydimension.already_in_ethereal_mind"), true);
+        if (target.level().dimension().equals(targetDimension)) {
+            player.displayClientMessage(Component.translatable("message.mydimension.already_in_target_mind"), true);
             return false;
         }
 
@@ -216,7 +217,7 @@ public class RiftItem extends Item {
         target.stopRiding();
         target.ejectPassengers();
 
-        Entity moved = target.changeDimension(targetLevel, new EtherealMindTeleporter(player.getX(), ETHEREAL_SURFACE_Y, player.getZ()));
+        Entity moved = target.changeDimension(targetLevel, new EtherealMindTeleporter(player.getX(), safeEntryY(targetLevel, targetDimension, player.getX(), player.getZ()), player.getZ()));
         if (moved != null) {
             moved.getPersistentData().putBoolean(IMPORTED_TO_ETHEREAL_MIND, true);
             targetLevel.playSound(null, BlockPos.containing(moved.position()), SoundEvents.ENDERMAN_TELEPORT, SoundSource.NEUTRAL, 1.0F, 1.0F);
