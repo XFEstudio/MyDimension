@@ -24,7 +24,6 @@ public class RiftAnchorEntity extends Entity {
         super(entityType, level);
         noPhysics = true;
         setNoGravity(true);
-        setGlowingTag(true);
     }
 
     public RiftAnchorEntity(Level level, UUID owner, double x, double y, double z) {
@@ -36,7 +35,6 @@ public class RiftAnchorEntity extends Entity {
     @Override
     public void tick() {
         super.tick();
-        setGlowingTag(true);
         setDeltaMovement(0.0D, 0.0D, 0.0D);
         if (!level().isClientSide()) {
             placeLight();
