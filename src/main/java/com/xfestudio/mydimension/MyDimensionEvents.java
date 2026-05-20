@@ -21,6 +21,7 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.event.CommandEvent;
 import net.minecraftforge.event.entity.living.MobSpawnEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
+import net.minecraftforge.event.entity.player.PlayerWakeUpEvent;
 import net.minecraftforge.event.level.SleepFinishedTimeEvent;
 import net.minecraftforge.eventbus.api.Event;
 import net.minecraftforge.eventbus.api.EventPriority;
@@ -87,15 +88,28 @@ public class MyDimensionEvents {
             return;
         }
 
-        long dayTime = level.getDayTime();
-        long timeUntilMorning = DAY_LENGTH - (dayTime % DAY_LENGTH);
-        event.setTimeAddition(timeUntilMorning);
-        level.setWeatherParameters(6000, 0, false, false);
+        makeEtherealMorning(level);
+    }
+
+    @SubscribeEvent
+    public void wakeUpInEtherealMind(PlayerWakeUpEvent event) {
+        if (!event.updateLevel() || !(event.getEntity() instanceof ServerPlayer player) || !player.level().dimension().equals(ModDimensions.ETHEREAL_MIND)) {
+            return;
+        }
+
+        makeEtherealMorning(player.serverLevel());
     }
 
     private static String firstWord(String input) {
         int space = input.indexOf(' ');
         return space < 0 ? input : input.substring(0, space);
+    }
+
+    private static void makeEtherealMorning(ServerLevel level) {
+        long dayTime = level.getDayTime();
+        long morning = dayTime - (dayTime % DAY_LENGTH) + DAY_LENGTH;
+        level.setDayTime(morning);
+        level.setWeatherParameters(6000, 0, false, false);
     }
 
     private static void sendTargetToEtherealMind(PlayerInteractEvent event, Entity targetEntity) {
