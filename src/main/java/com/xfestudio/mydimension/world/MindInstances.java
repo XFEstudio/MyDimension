@@ -12,13 +12,14 @@ import java.util.Map;
 import java.util.UUID;
 
 public class MindInstances {
-    public static final int MAX_PLAYER_SLOTS = 32;
+    public static final int MAX_PLAYER_SLOTS = 128;
     private static final String DATA_NAME = "mydimension_mind_instances";
     private static final String NEXT_SLOT_TAG = "NextSlot";
     private static final String SLOTS_TAG = "Slots";
 
     public static ResourceKey<Level> dimensionFor(ServerPlayer player, ResourceKey<Level> baseDimension) {
-        return ModDimensions.playerDimension(baseDimension, slotFor(player));
+        int slot = slotFor(player);
+        return slot < 0 ? baseDimension : ModDimensions.playerDimension(baseDimension, slot);
     }
 
     public static int slotFor(ServerPlayer player) {
@@ -61,6 +62,10 @@ public class MindInstances {
             Integer existing = slots.get(owner);
             if (existing != null) {
                 return existing;
+            }
+
+            if (nextSlot >= MAX_PLAYER_SLOTS) {
+                return -1;
             }
 
             int slot = nextSlot++;

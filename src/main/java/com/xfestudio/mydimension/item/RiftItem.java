@@ -9,6 +9,7 @@ import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
@@ -23,8 +24,10 @@ import net.minecraft.world.entity.projectile.ProjectileUtil;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.dimension.DimensionType;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.portal.PortalInfo;
+import net.minecraft.world.level.storage.LevelResource;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.Vec3;
@@ -32,6 +35,12 @@ import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.common.util.ITeleporter;
 import net.minecraftforge.fml.DistExecutor;
 
+import java.io.IOException;
+import java.nio.file.FileVisitResult;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.function.Function;
 
 public class RiftItem extends Item {
@@ -100,7 +109,7 @@ public class RiftItem extends Item {
         }
 
         if (player instanceof ServerPlayer serverPlayer) {
-            sendToMind(serverPlayer, target, stack, action.targetDimension());
+            sendToMind(serverPlayer, target, stack, action);
         }
 
         return InteractionResult.CONSUME;
@@ -126,26 +135,32 @@ public class RiftItem extends Item {
             return;
         }
 
+        if (action.copiesSharedDimension()) {
+            copySharedDimension(player, action);
+            return;
+        }
+
         if (action.sendsMob()) {
             LivingEntity target = findLookedAtLivingEntity(player);
-            if (target == null || !sendToMind(player, target, stack, action.targetDimension())) {
+            if (target == null || !sendToMind(player, target, stack, action)) {
                 player.displayClientMessage(Component.translatable("message.mydimension.no_mob_target"), true);
             }
             return;
         }
 
-        teleport(player, stack, action.targetDimension());
+        teleport(player, stack, action);
     }
 
-    private static void teleport(ServerPlayer player, ItemStack stack, ResourceKey<Level> selectedDimension) {
+    private static void teleport(ServerPlayer player, ItemStack stack, RiftAction action) {
+        ResourceKey<Level> selectedDimension = action.targetDimension();
         ServerLevel currentLevel = player.serverLevel();
         ResourceKey<Level> currentDimension = currentLevel.dimension();
         ResourceKey<Level> currentMindBase = ModDimensions.baseMindDimension(currentDimension);
-        boolean returningFromSelectedMind = selectedDimension.equals(currentMindBase);
+        ResourceKey<Level> actualTargetDimension = action.usesSharedDimension() ? selectedDimension : MindInstances.dimensionFor(player, selectedDimension);
+        boolean returningFromSelectedMind = currentDimension.equals(actualTargetDimension) && selectedDimension.equals(currentMindBase);
         ReturnPoint returnPoint = returningFromSelectedMind ? readPoint(stack, RETURN_POINT_TAG) : null;
-        ResourceKey<Level> targetDimension = returningFromSelectedMind ? null : MindInstances.dimensionFor(player, selectedDimension);
-        ReturnPoint mindPoint = returningFromSelectedMind ? null : readMindPoint(stack, targetDimension);
-        ServerLevel targetLevel = returningFromSelectedMind ? getReturnLevel(player, returnPoint) : player.getServer().getLevel(targetDimension);
+        ReturnPoint mindPoint = returningFromSelectedMind ? null : readMindPoint(stack, actualTargetDimension);
+        ServerLevel targetLevel = returningFromSelectedMind ? getReturnLevel(player, returnPoint) : player.getServer().getLevel(actualTargetDimension);
 
         if (targetLevel == null) {
             player.displayClientMessage(Component.translatable("message.mydimension.missing_dimension"), true);
@@ -154,7 +169,7 @@ public class RiftItem extends Item {
 
         double x = player.getX();
         double z = player.getZ();
-        double y = returningFromSelectedMind ? overworldSpawnY(targetLevel) : safeEntryY(targetLevel, targetDimension, x, z);
+        double y = returningFromSelectedMind ? overworldSpawnY(targetLevel) : safeEntryY(targetLevel, actualTargetDimension, x, z);
         float yRot = player.getYRot();
         float xRot = player.getXRot();
 
@@ -210,8 +225,9 @@ public class RiftItem extends Item {
         return ModDimensions.entryHeight(dimension);
     }
 
-    public static boolean sendToMind(ServerPlayer player, LivingEntity target, ItemStack stack, ResourceKey<Level> targetDimension) {
-        ResourceKey<Level> actualTargetDimension = MindInstances.dimensionFor(player, targetDimension);
+    public static boolean sendToMind(ServerPlayer player, LivingEntity target, ItemStack stack, RiftAction action) {
+        ResourceKey<Level> targetDimension = action.targetDimension();
+        ResourceKey<Level> actualTargetDimension = action.usesSharedDimension() ? targetDimension : MindInstances.dimensionFor(player, targetDimension);
         ServerLevel targetLevel = player.getServer().getLevel(actualTargetDimension);
         if (targetLevel == null) {
             player.displayClientMessage(Component.translatable("message.mydimension.missing_dimension"), true);
@@ -241,6 +257,87 @@ public class RiftItem extends Item {
         }
 
         return false;
+    }
+
+    private static void copySharedDimension(ServerPlayer player, RiftAction action) {
+        if (!player.isCreative()) {
+            player.displayClientMessage(Component.translatable("message.mydimension.copy_creative_only"), true);
+            return;
+        }
+
+        ResourceKey<Level> sourceDimension = action.targetDimension();
+        ResourceKey<Level> targetDimension = MindInstances.dimensionFor(player, sourceDimension);
+        if (sourceDimension.equals(targetDimension)) {
+            player.displayClientMessage(Component.translatable("message.mydimension.copy_private_unavailable"), true);
+            return;
+        }
+
+        MinecraftServer server = player.getServer();
+        if (server == null || server.getLevel(sourceDimension) == null || server.getLevel(targetDimension) == null) {
+            player.displayClientMessage(Component.translatable("message.mydimension.missing_dimension"), true);
+            return;
+        }
+
+        try {
+            server.saveEverything(false, true, false);
+            Path worldRoot = server.getWorldPath(LevelResource.ROOT).normalize();
+            Path source = DimensionType.getStorageFolder(sourceDimension, worldRoot).normalize();
+            Path target = DimensionType.getStorageFolder(targetDimension, worldRoot).normalize();
+            if (!source.startsWith(worldRoot) || !target.startsWith(worldRoot) || source.equals(target)) {
+                player.displayClientMessage(Component.translatable("message.mydimension.copy_failed"), true);
+                return;
+            }
+
+            if (!Files.exists(source)) {
+                player.displayClientMessage(Component.translatable("message.mydimension.copy_missing_shared"), true);
+                return;
+            }
+
+            deleteDirectory(target);
+            copyDirectory(source, target);
+            player.displayClientMessage(Component.translatable("message.mydimension.copy_done"), true);
+        } catch (IOException exception) {
+            player.displayClientMessage(Component.translatable("message.mydimension.copy_failed"), true);
+        }
+    }
+
+    private static void deleteDirectory(Path path) throws IOException {
+        if (!Files.exists(path)) {
+            return;
+        }
+
+        Files.walkFileTree(path, new SimpleFileVisitor<>() {
+            @Override
+            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                Files.delete(file);
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException {
+                if (exc != null) {
+                    throw exc;
+                }
+                Files.delete(dir);
+                return FileVisitResult.CONTINUE;
+            }
+        });
+    }
+
+    private static void copyDirectory(Path source, Path target) throws IOException {
+        Files.walkFileTree(source, new SimpleFileVisitor<>() {
+            @Override
+            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
+                Files.createDirectories(target.resolve(source.relativize(dir)));
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                Files.copy(file, target.resolve(source.relativize(file)));
+                return FileVisitResult.CONTINUE;
+            }
+        });
     }
 
     private static LivingEntity findLookedAtLivingEntity(ServerPlayer player) {

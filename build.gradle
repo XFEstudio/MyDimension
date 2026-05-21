@@ -122,7 +122,7 @@ tasks.register('generatePlayerMindDimensions') {
                 ]
         ]
 
-        (0..<32).each { slot ->
+        (0..<128).each { slot ->
             dimensions.each { name, json ->
                 def file = new File(dimensionDir, "slot_${slot}/${name}.json")
                 file.parentFile.mkdirs()

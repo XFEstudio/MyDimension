@@ -1,0 +1,26 @@
+{
+  "type": "mydimension:ethereal_mind",
+  "generator": {
+    "type": "minecraft:flat",
+    "settings": {
+      "biome": "mydimension:ethereal_mind",
+      "features": false,
+      "lakes": false,
+      "layers": [
+        {
+          "block": "minecraft:stone",
+          "height": 60
+        },
+        {
+          "block": "minecraft:dirt",
+          "height": 3
+        },
+        {
+          "block": "minecraft:quartz_block",
+          "height": 3
+        }
+      ],
+      "structure_overrides": []
+    }
+  }
+}
