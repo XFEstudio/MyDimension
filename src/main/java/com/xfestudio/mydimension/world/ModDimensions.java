@@ -65,11 +65,55 @@ public class ModDimensions {
             NATURE_MIND, 61.0D
     );
 
+    private static final Map<String, ResourceKey<Level>> MIND_IDS = Map.of(
+            "ethereal_mind", ETHEREAL_MIND,
+            "mirror_mind", MIRROR_MIND,
+            "water_mind", WATER_MIND,
+            "nature_mind", NATURE_MIND
+    );
+
     public static boolean isMindDimension(ResourceKey<Level> dimension) {
-        return MIND_DIMENSIONS.contains(dimension);
+        return baseMindDimension(dimension) != null;
+    }
+
+    public static ResourceKey<Level> baseMindDimension(ResourceKey<Level> dimension) {
+        if (MIND_DIMENSIONS.contains(dimension)) {
+            return dimension;
+        }
+
+        ResourceLocation location = dimension.location();
+        if (!MyDimension.MOD_ID.equals(location.getNamespace())) {
+            return null;
+        }
+
+        String path = location.getPath();
+        String prefix = "player_minds/slot_";
+        if (!path.startsWith(prefix)) {
+            return null;
+        }
+
+        int slash = path.indexOf('/', prefix.length());
+        if (slash < 0) {
+            return null;
+        }
+
+        return MIND_IDS.get(path.substring(slash + 1));
+    }
+
+    public static ResourceKey<Level> playerDimension(ResourceKey<Level> baseDimension, int slot) {
+        ResourceKey<Level> base = baseMindDimension(baseDimension);
+        if (base == null) {
+            return baseDimension;
+        }
+
+        return ResourceKey.create(
+                Registries.DIMENSION,
+                new ResourceLocation(MyDimension.MOD_ID, "player_minds/slot_" + slot + "/" + base.location().getPath())
+        );
     }
 
     public static double entryHeight(ResourceKey<Level> dimension) {
-        return ENTRY_HEIGHTS.getOrDefault(dimension, 80.0D);
+        ResourceKey<Level> base = baseMindDimension(dimension);
+        return ENTRY_HEIGHTS.getOrDefault(base, 80.0D);
     }
 }

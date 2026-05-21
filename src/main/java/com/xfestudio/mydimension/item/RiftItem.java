@@ -1,6 +1,7 @@
 package com.xfestudio.mydimension.item;
 
 import com.xfestudio.mydimension.client.RiftClient;
+import com.xfestudio.mydimension.world.MindInstances;
 import com.xfestudio.mydimension.world.ModDimensions;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
@@ -139,10 +140,12 @@ public class RiftItem extends Item {
     private static void teleport(ServerPlayer player, ItemStack stack, ResourceKey<Level> selectedDimension) {
         ServerLevel currentLevel = player.serverLevel();
         ResourceKey<Level> currentDimension = currentLevel.dimension();
-        boolean returningFromSelectedMind = currentDimension.equals(selectedDimension);
+        ResourceKey<Level> currentMindBase = ModDimensions.baseMindDimension(currentDimension);
+        boolean returningFromSelectedMind = selectedDimension.equals(currentMindBase);
         ReturnPoint returnPoint = returningFromSelectedMind ? readPoint(stack, RETURN_POINT_TAG) : null;
-        ReturnPoint mindPoint = returningFromSelectedMind ? null : readMindPoint(stack, selectedDimension);
-        ServerLevel targetLevel = returningFromSelectedMind ? getReturnLevel(player, returnPoint) : player.getServer().getLevel(selectedDimension);
+        ResourceKey<Level> targetDimension = returningFromSelectedMind ? null : MindInstances.dimensionFor(player, selectedDimension);
+        ReturnPoint mindPoint = returningFromSelectedMind ? null : readMindPoint(stack, targetDimension);
+        ServerLevel targetLevel = returningFromSelectedMind ? getReturnLevel(player, returnPoint) : player.getServer().getLevel(targetDimension);
 
         if (targetLevel == null) {
             player.displayClientMessage(Component.translatable("message.mydimension.missing_dimension"), true);
@@ -151,7 +154,7 @@ public class RiftItem extends Item {
 
         double x = player.getX();
         double z = player.getZ();
-        double y = returningFromSelectedMind ? overworldSpawnY(targetLevel) : safeEntryY(targetLevel, selectedDimension, x, z);
+        double y = returningFromSelectedMind ? overworldSpawnY(targetLevel) : safeEntryY(targetLevel, targetDimension, x, z);
         float yRot = player.getYRot();
         float xRot = player.getXRot();
 
@@ -208,14 +211,10 @@ public class RiftItem extends Item {
     }
 
     public static boolean sendToMind(ServerPlayer player, LivingEntity target, ItemStack stack, ResourceKey<Level> targetDimension) {
-        ServerLevel targetLevel = player.getServer().getLevel(targetDimension);
+        ResourceKey<Level> actualTargetDimension = MindInstances.dimensionFor(player, targetDimension);
+        ServerLevel targetLevel = player.getServer().getLevel(actualTargetDimension);
         if (targetLevel == null) {
             player.displayClientMessage(Component.translatable("message.mydimension.missing_dimension"), true);
-            return false;
-        }
-
-        if (target.level().dimension().equals(targetDimension)) {
-            player.displayClientMessage(Component.translatable("message.mydimension.already_in_target_mind"), true);
             return false;
         }
 
@@ -223,10 +222,16 @@ public class RiftItem extends Item {
         target.stopRiding();
         target.ejectPassengers();
 
-        AnchorPoint anchor = readAnchor(player, targetDimension);
+        AnchorPoint anchor = readAnchor(player, actualTargetDimension);
         double targetX = anchor != null ? anchor.x() : player.getX();
-        double targetY = anchor != null ? anchor.y() : safeEntryY(targetLevel, targetDimension, player.getX(), player.getZ());
+        double targetY = anchor != null ? anchor.y() : safeEntryY(targetLevel, actualTargetDimension, targetX, player.getZ());
         double targetZ = anchor != null ? anchor.z() : player.getZ();
+
+        if (target.level().dimension().equals(actualTargetDimension)) {
+            player.displayClientMessage(Component.translatable("message.mydimension.already_in_target_mind"), true);
+            return false;
+        }
+
         Entity moved = target.changeDimension(targetLevel, new EtherealMindTeleporter(targetX, targetY, targetZ));
         if (moved != null) {
             moved.getPersistentData().putBoolean(IMPORTED_TO_ETHEREAL_MIND, true);

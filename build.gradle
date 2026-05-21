@@ -47,13 +47,102 @@ minecraft {
     }
 }
 
-sourceSets.main.resources { srcDir 'src/generated/resources' }
+def generatedPlayerMindDimensions = layout.buildDirectory.dir('generated/playerMindDimensions')
+
+tasks.register('generatePlayerMindDimensions') {
+    def outputDir = generatedPlayerMindDimensions
+    outputs.dir(outputDir)
+
+    doLast {
+        def dimensionDir = outputDir.get().dir('data/mydimension/dimension/player_minds').asFile
+        delete(dimensionDir)
+
+        def dimensions = [
+                ethereal_mind: [
+                        type     : 'mydimension:ethereal_mind',
+                        generator: [
+                                type    : 'minecraft:flat',
+                                settings: [
+                                        biome              : 'mydimension:ethereal_mind',
+                                        features           : false,
+                                        lakes              : false,
+                                        layers             : [
+                                                [block: 'minecraft:stone', height: 60],
+                                                [block: 'minecraft:dirt', height: 3],
+                                                [block: 'minecraft:quartz_block', height: 3]
+                                        ],
+                                        structure_overrides: []
+                                ]
+                        ]
+                ],
+                mirror_mind  : [
+                        type     : 'mydimension:mirror_mind',
+                        generator: [
+                                type        : 'mydimension:no_structure_noise',
+                                biome_source: [
+                                        type  : 'minecraft:multi_noise',
+                                        preset: 'minecraft:overworld'
+                                ],
+                                settings    : 'minecraft:overworld'
+                        ]
+                ],
+                water_mind   : [
+                        type     : 'mydimension:water_mind',
+                        generator: [
+                                type    : 'minecraft:flat',
+                                settings: [
+                                        biome              : 'mydimension:water_mind',
+                                        features           : false,
+                                        lakes              : false,
+                                        layers             : [
+                                                [block: 'minecraft:stone', height: 20],
+                                                [block: 'minecraft:gravel', height: 5],
+                                                [block: 'minecraft:water', height: 50]
+                                        ],
+                                        structure_overrides: []
+                                ]
+                        ]
+                ],
+                nature_mind  : [
+                        type     : 'mydimension:nature_mind',
+                        generator: [
+                                type    : 'minecraft:flat',
+                                settings: [
+                                        biome              : 'mydimension:nature_mind',
+                                        features           : false,
+                                        lakes              : false,
+                                        layers             : [
+                                                [block: 'minecraft:stone', height: 50],
+                                                [block: 'minecraft:dirt', height: 9],
+                                                [block: 'minecraft:grass_block', height: 1]
+                                        ],
+                                        structure_overrides: []
+                                ]
+                        ]
+                ]
+        ]
+
+        (0..<32).each { slot ->
+            dimensions.each { name, json ->
+                def file = new File(dimensionDir, "slot_${slot}/${name}.json")
+                file.parentFile.mkdirs()
+                file.text = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(json)) + System.lineSeparator()
+            }
+        }
+    }
+}
+
+sourceSets.main.resources {
+    srcDir 'src/generated/resources'
+    srcDir generatedPlayerMindDimensions
+}
 
 dependencies {
     minecraft "net.minecraftforge:forge:${project.minecraft_version}-${project.forge_version}"
 }
 
 tasks.named('processResources', ProcessResources).configure {
+    dependsOn tasks.named('generatePlayerMindDimensions')
     filteringCharset = 'UTF-8'
 
     var replaceProperties = [
