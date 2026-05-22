@@ -9,7 +9,6 @@ import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
@@ -24,10 +23,9 @@ import net.minecraft.world.entity.projectile.ProjectileUtil;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.level.dimension.DimensionType;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.portal.PortalInfo;
-import net.minecraft.world.level.storage.LevelResource;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.Vec3;
@@ -35,17 +33,12 @@ import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.common.util.ITeleporter;
 import net.minecraftforge.fml.DistExecutor;
 
-import java.io.IOException;
-import java.nio.file.FileVisitResult;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.SimpleFileVisitor;
-import java.nio.file.attribute.BasicFileAttributes;
 import java.util.function.Function;
 
 public class RiftItem extends Item {
     public static final double ETHEREAL_SURFACE_Y = 66.0D;
     public static final String IMPORTED_TO_ETHEREAL_MIND = "mydimension_imported_to_ethereal_mind";
+    private static final int COPY_CHUNK_RADIUS = 1;
     private static final String SELECTED_ACTION_TAG = "SelectedAction";
     private static final String RETURN_POINT_TAG = "ReturnPoint";
     private static final String MIND_POINTS_TAG = "MindPoints";
@@ -272,72 +265,68 @@ public class RiftItem extends Item {
             return;
         }
 
-        MinecraftServer server = player.getServer();
-        if (server == null || server.getLevel(sourceDimension) == null || server.getLevel(targetDimension) == null) {
+        ServerLevel sourceLevel = player.getServer().getLevel(sourceDimension);
+        ServerLevel targetLevel = player.getServer().getLevel(targetDimension);
+        if (sourceLevel == null || targetLevel == null) {
             player.displayClientMessage(Component.translatable("message.mydimension.missing_dimension"), true);
             return;
         }
 
-        try {
-            server.saveEverything(false, true, false);
-            Path worldRoot = server.getWorldPath(LevelResource.ROOT).normalize();
-            Path source = DimensionType.getStorageFolder(sourceDimension, worldRoot).normalize();
-            Path target = DimensionType.getStorageFolder(targetDimension, worldRoot).normalize();
-            if (!source.startsWith(worldRoot) || !target.startsWith(worldRoot) || source.equals(target)) {
-                player.displayClientMessage(Component.translatable("message.mydimension.copy_failed"), true);
-                return;
-            }
-
-            if (!Files.exists(source)) {
-                player.displayClientMessage(Component.translatable("message.mydimension.copy_missing_shared"), true);
-                return;
-            }
-
-            deleteDirectory(target);
-            copyDirectory(source, target);
-            player.displayClientMessage(Component.translatable("message.mydimension.copy_done"), true);
-        } catch (IOException exception) {
-            player.displayClientMessage(Component.translatable("message.mydimension.copy_failed"), true);
-        }
+        int copiedBlocks = copyNearbyBlocks(sourceLevel, targetLevel, player.blockPosition());
+        player.displayClientMessage(Component.translatable("message.mydimension.copy_done", copiedBlocks), true);
     }
 
-    private static void deleteDirectory(Path path) throws IOException {
-        if (!Files.exists(path)) {
+    private static int copyNearbyBlocks(ServerLevel sourceLevel, ServerLevel targetLevel, BlockPos center) {
+        int centerChunkX = center.getX() >> 4;
+        int centerChunkZ = center.getZ() >> 4;
+        int minY = Math.max(sourceLevel.getMinBuildHeight(), targetLevel.getMinBuildHeight());
+        int maxY = Math.min(sourceLevel.getMaxBuildHeight(), targetLevel.getMaxBuildHeight());
+        BlockPos.MutableBlockPos sourcePos = new BlockPos.MutableBlockPos();
+        BlockPos.MutableBlockPos targetPos = new BlockPos.MutableBlockPos();
+        int copied = 0;
+
+        for (int chunkX = centerChunkX - COPY_CHUNK_RADIUS; chunkX <= centerChunkX + COPY_CHUNK_RADIUS; chunkX++) {
+            for (int chunkZ = centerChunkZ - COPY_CHUNK_RADIUS; chunkZ <= centerChunkZ + COPY_CHUNK_RADIUS; chunkZ++) {
+                sourceLevel.getChunk(chunkX, chunkZ);
+                targetLevel.getChunk(chunkX, chunkZ);
+
+                int minX = chunkX << 4;
+                int minZ = chunkZ << 4;
+                for (int x = minX; x < minX + 16; x++) {
+                    for (int z = minZ; z < minZ + 16; z++) {
+                        for (int y = minY; y < maxY; y++) {
+                            sourcePos.set(x, y, z);
+                            targetPos.set(x, y, z);
+                            var state = sourceLevel.getBlockState(sourcePos);
+                            targetLevel.setBlock(targetPos, state, 2);
+                            copyBlockEntity(sourceLevel, targetLevel, sourcePos, targetPos);
+                            copied++;
+                        }
+                    }
+                }
+            }
+        }
+
+        return copied;
+    }
+
+    private static void copyBlockEntity(ServerLevel sourceLevel, ServerLevel targetLevel, BlockPos sourcePos, BlockPos targetPos) {
+        BlockEntity sourceBlockEntity = sourceLevel.getBlockEntity(sourcePos);
+        if (sourceBlockEntity == null) {
             return;
         }
 
-        Files.walkFileTree(path, new SimpleFileVisitor<>() {
-            @Override
-            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                Files.delete(file);
-                return FileVisitResult.CONTINUE;
-            }
+        BlockEntity targetBlockEntity = targetLevel.getBlockEntity(targetPos);
+        if (targetBlockEntity == null) {
+            return;
+        }
 
-            @Override
-            public FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException {
-                if (exc != null) {
-                    throw exc;
-                }
-                Files.delete(dir);
-                return FileVisitResult.CONTINUE;
-            }
-        });
-    }
-
-    private static void copyDirectory(Path source, Path target) throws IOException {
-        Files.walkFileTree(source, new SimpleFileVisitor<>() {
-            @Override
-            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
-                Files.createDirectories(target.resolve(source.relativize(dir)));
-                return FileVisitResult.CONTINUE;
-            }
-
-            @Override
-            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                Files.copy(file, target.resolve(source.relativize(file)));
-                return FileVisitResult.CONTINUE;
-            }
-        });
+        CompoundTag tag = sourceBlockEntity.saveWithFullMetadata();
+        tag.putInt("x", targetPos.getX());
+        tag.putInt("y", targetPos.getY());
+        tag.putInt("z", targetPos.getZ());
+        targetBlockEntity.load(tag);
+        targetBlockEntity.setChanged();
     }
 
     private static LivingEntity findLookedAtLivingEntity(ServerPlayer player) {

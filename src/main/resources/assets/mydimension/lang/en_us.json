@@ -46,6 +46,6 @@
   "message.mydimension.copy_creative_only": "Only creative players can copy shared mind saves",
   "message.mydimension.copy_private_unavailable": "No private mind slot is available, so the shared save cannot be copied",
   "message.mydimension.copy_missing_shared": "The shared mind has no saved world data to copy yet",
-  "message.mydimension.copy_done": "Copied the shared mind save to your private mind",
+  "message.mydimension.copy_done": "Copied nearby shared mind blocks to your private mind: %s blocks",
   "message.mydimension.copy_failed": "Failed to copy shared mind save"
 }
