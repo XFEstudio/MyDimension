@@ -123,12 +123,11 @@ tasks.register('generatePlayerMindDimensions') {
                 soaring_mind : [
                         type     : 'mydimension:soaring_mind',
                         generator: [
-                                type        : 'mydimension:no_structure_noise',
+                                type        : 'mydimension:soaring_islands',
                                 biome_source: [
                                         type  : 'minecraft:multi_noise',
                                         preset: 'minecraft:overworld'
-                                ],
-                                settings    : 'minecraft:floating_islands'
+                                ]
                         ]
                 ]
         ]
