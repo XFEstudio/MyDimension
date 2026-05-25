@@ -109,7 +109,7 @@ tasks.register('generatePlayerMindDimensions') {
                                 type    : 'minecraft:flat',
                                 settings: [
                                         biome              : 'mydimension:nature_mind',
-                                        features           : false,
+                                        features           : true,
                                         lakes              : false,
                                         layers             : [
                                                 [block: 'minecraft:stone', height: 50],
@@ -118,6 +118,17 @@ tasks.register('generatePlayerMindDimensions') {
                                         ],
                                         structure_overrides: []
                                 ]
+                        ]
+                ],
+                soaring_mind : [
+                        type     : 'mydimension:soaring_mind',
+                        generator: [
+                                type        : 'mydimension:no_structure_noise',
+                                biome_source: [
+                                        type  : 'minecraft:multi_noise',
+                                        preset: 'minecraft:overworld'
+                                ],
+                                settings    : 'minecraft:floating_islands'
                         ]
                 ]
         ]

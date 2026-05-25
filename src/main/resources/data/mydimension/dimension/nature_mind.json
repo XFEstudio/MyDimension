@@ -4,7 +4,7 @@
     "type": "minecraft:flat",
     "settings": {
       "biome": "mydimension:nature_mind",
-      "features": false,
+      "features": true,
       "lakes": false,
       "layers": [
         {

@@ -47,9 +47,9 @@ public class RiftActionScreen extends Screen {
         int centerX = width / 2;
         int centerY = height / 2;
         addTabs(centerX, centerY - 108);
-        addActionGrid(currentActions(), centerY - 32);
+        addActionGrid(currentActions(), centerY - 36);
         if (inMindDimension) {
-            addCenteredActionButton(RiftAction.SET_ANCHOR, centerY + 78);
+            addCenteredActionButton(RiftAction.SET_ANCHOR, centerY + 88);
         }
     }
 
@@ -88,21 +88,22 @@ public class RiftActionScreen extends Screen {
 
     private RiftAction[] currentActions() {
         return switch (page) {
-            case TRAVEL_PRIVATE -> new RiftAction[] {RiftAction.ETHEREAL_MIND, RiftAction.MIRROR_MIND, RiftAction.WATER_MIND, RiftAction.NATURE_MIND};
-            case TRAVEL_SHARED -> new RiftAction[] {RiftAction.SHARED_ETHEREAL_MIND, RiftAction.SHARED_MIRROR_MIND, RiftAction.SHARED_WATER_MIND, RiftAction.SHARED_NATURE_MIND};
-            case MOB_PRIVATE -> new RiftAction[] {RiftAction.SEND_MOB_ETHEREAL, RiftAction.SEND_MOB_MIRROR, RiftAction.SEND_MOB_WATER, RiftAction.SEND_MOB_NATURE};
-            case MOB_SHARED -> new RiftAction[] {RiftAction.SEND_MOB_SHARED_ETHEREAL, RiftAction.SEND_MOB_SHARED_MIRROR, RiftAction.SEND_MOB_SHARED_WATER, RiftAction.SEND_MOB_SHARED_NATURE};
-            case COPY_SHARED -> new RiftAction[] {RiftAction.COPY_SHARED_ETHEREAL, RiftAction.COPY_SHARED_MIRROR, RiftAction.COPY_SHARED_WATER, RiftAction.COPY_SHARED_NATURE};
+            case TRAVEL_PRIVATE -> new RiftAction[] {RiftAction.ETHEREAL_MIND, RiftAction.MIRROR_MIND, RiftAction.WATER_MIND, RiftAction.NATURE_MIND, RiftAction.SOARING_MIND};
+            case TRAVEL_SHARED -> new RiftAction[] {RiftAction.SHARED_ETHEREAL_MIND, RiftAction.SHARED_MIRROR_MIND, RiftAction.SHARED_WATER_MIND, RiftAction.SHARED_NATURE_MIND, RiftAction.SHARED_SOARING_MIND};
+            case MOB_PRIVATE -> new RiftAction[] {RiftAction.SEND_MOB_ETHEREAL, RiftAction.SEND_MOB_MIRROR, RiftAction.SEND_MOB_WATER, RiftAction.SEND_MOB_NATURE, RiftAction.SEND_MOB_SOARING};
+            case MOB_SHARED -> new RiftAction[] {RiftAction.SEND_MOB_SHARED_ETHEREAL, RiftAction.SEND_MOB_SHARED_MIRROR, RiftAction.SEND_MOB_SHARED_WATER, RiftAction.SEND_MOB_SHARED_NATURE, RiftAction.SEND_MOB_SHARED_SOARING};
+            case COPY_SHARED -> new RiftAction[] {RiftAction.COPY_SHARED_ETHEREAL, RiftAction.COPY_SHARED_MIRROR, RiftAction.COPY_SHARED_WATER, RiftAction.COPY_SHARED_NATURE, RiftAction.COPY_SHARED_SOARING};
         };
     }
 
     private void addActionGrid(RiftAction[] actions, int top) {
-        int buttonWidth = rowButtonWidth(2);
-        int totalWidth = buttonWidth * 2 + BUTTON_GAP;
+        int columns = 3;
+        int buttonWidth = rowButtonWidth(columns);
+        int totalWidth = buttonWidth * columns + BUTTON_GAP * (columns - 1);
         int left = width / 2 - totalWidth / 2;
         for (int i = 0; i < actions.length; i++) {
-            int x = left + (i % 2) * (buttonWidth + BUTTON_GAP);
-            int y = top + (i / 2) * 42;
+            int x = left + (i % columns) * (buttonWidth + BUTTON_GAP);
+            int y = top + (i / columns) * 42;
             addRenderableWidget(new ActionButton(x, y, buttonWidth, actions[i], getSelectedAction() == actions[i]));
         }
     }
@@ -115,21 +116,21 @@ public class RiftActionScreen extends Screen {
     private int rowButtonWidth(int columns) {
         int available = Math.max(96, width - 64);
         int maxByWidth = (available - (columns - 1) * BUTTON_GAP) / columns;
-        return Mth.clamp(maxByWidth, 116, 178);
+        return Mth.clamp(maxByWidth, 64, 150);
     }
 
     private void renderCenterPanel(GuiGraphics graphics) {
         int centerX = width / 2;
         int centerY = height / 2;
-        int left = centerX - 120;
+        int left = centerX - 180;
         int top = centerY - 72;
-        int right = centerX + 120;
-        int bottom = centerY + 64;
+        int right = centerX + 180;
+        int bottom = centerY + 72;
 
         fillRoundedRect(graphics, left, top, right, bottom, 7, 0x99060A12);
         drawRoundedBorder(graphics, left, top, right, bottom, 7, 0xFF85D6F7);
         graphics.drawCenteredString(font, title, centerX, centerY - 61, 0xFFEAFBFF);
-        graphics.drawCenteredString(font, page.title(), centerX, centerY + 43, page == Page.COPY_SHARED ? 0xFFB8FFD2 : 0xFF9DDBFF);
+        graphics.drawCenteredString(font, page.title(), centerX, centerY + 52, page == Page.COPY_SHARED ? 0xFFB8FFD2 : 0xFF9DDBFF);
     }
 
     private RiftAction getSelectedAction() {

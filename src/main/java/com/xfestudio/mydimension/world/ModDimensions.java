@@ -51,25 +51,38 @@ public class ModDimensions {
             new ResourceLocation(MyDimension.MOD_ID, "nature_mind")
     );
 
+    public static final ResourceKey<Level> SOARING_MIND = ResourceKey.create(
+            Registries.DIMENSION,
+            new ResourceLocation(MyDimension.MOD_ID, "soaring_mind")
+    );
+
+    public static final ResourceKey<DimensionType> SOARING_MIND_TYPE = ResourceKey.create(
+            Registries.DIMENSION_TYPE,
+            new ResourceLocation(MyDimension.MOD_ID, "soaring_mind")
+    );
+
     private static final Set<ResourceKey<Level>> MIND_DIMENSIONS = Set.of(
             ETHEREAL_MIND,
             MIRROR_MIND,
             WATER_MIND,
-            NATURE_MIND
+            NATURE_MIND,
+            SOARING_MIND
     );
 
     private static final Map<ResourceKey<Level>, Double> ENTRY_HEIGHTS = Map.of(
             ETHEREAL_MIND, 66.0D,
             MIRROR_MIND, 80.0D,
             WATER_MIND, 76.0D,
-            NATURE_MIND, 61.0D
+            NATURE_MIND, 61.0D,
+            SOARING_MIND, 128.0D
     );
 
     private static final Map<String, ResourceKey<Level>> MIND_IDS = Map.of(
             "ethereal_mind", ETHEREAL_MIND,
             "mirror_mind", MIRROR_MIND,
             "water_mind", WATER_MIND,
-            "nature_mind", NATURE_MIND
+            "nature_mind", NATURE_MIND,
+            "soaring_mind", SOARING_MIND
     );
 
     public static boolean isMindDimension(ResourceKey<Level> dimension) {

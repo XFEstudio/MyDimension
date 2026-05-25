@@ -162,7 +162,10 @@ public class RiftItem extends Item {
 
         double x = player.getX();
         double z = player.getZ();
-        double y = returningFromSelectedMind ? overworldSpawnY(targetLevel) : safeEntryY(targetLevel, actualTargetDimension, x, z);
+        EntryPoint entryPoint = returningFromSelectedMind ? new EntryPoint(x, overworldSpawnY(targetLevel), z) : safeEntryPoint(targetLevel, actualTargetDimension, x, z);
+        x = entryPoint.x();
+        double y = entryPoint.y();
+        z = entryPoint.z();
         float yRot = player.getYRot();
         float xRot = player.getXRot();
 
@@ -208,14 +211,57 @@ public class RiftItem extends Item {
     }
 
     private static double safeEntryY(ServerLevel level, ResourceKey<Level> dimension, double x, double z) {
+        return safeEntryPoint(level, dimension, x, z).y();
+    }
+
+    private static EntryPoint safeEntryPoint(ServerLevel level, ResourceKey<Level> dimension, double x, double z) {
         int blockX = (int) Math.floor(x);
         int blockZ = (int) Math.floor(z);
         int height = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, blockX, blockZ);
         if (height > level.getMinBuildHeight()) {
-            return height + 1.0D;
+            return new EntryPoint(x, height + 1.0D, z);
         }
 
-        return ModDimensions.entryHeight(dimension);
+        if (ModDimensions.SOARING_MIND.equals(ModDimensions.baseMindDimension(dimension))) {
+            EntryPoint nearby = findNearbySurface(level, blockX, blockZ);
+            if (nearby != null) {
+                return nearby;
+            }
+        }
+
+        return new EntryPoint(x, ModDimensions.entryHeight(dimension), z);
+    }
+
+    private static EntryPoint findNearbySurface(ServerLevel level, int centerX, int centerZ) {
+        for (int radius = 8; radius <= 128; radius += 8) {
+            EntryPoint best = null;
+            int bestDistance = Integer.MAX_VALUE;
+            for (int dx = -radius; dx <= radius; dx += 8) {
+                for (int dz = -radius; dz <= radius; dz += 8) {
+                    if (Math.abs(dx) != radius && Math.abs(dz) != radius) {
+                        continue;
+                    }
+
+                    int x = centerX + dx;
+                    int z = centerZ + dz;
+                    int height = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z);
+                    if (height <= level.getMinBuildHeight()) {
+                        continue;
+                    }
+
+                    int distance = dx * dx + dz * dz;
+                    if (distance < bestDistance) {
+                        bestDistance = distance;
+                        best = new EntryPoint(x + 0.5D, height + 1.0D, z + 0.5D);
+                    }
+                }
+            }
+            if (best != null) {
+                return best;
+            }
+        }
+
+        return null;
     }
 
     public static boolean sendToMind(ServerPlayer player, LivingEntity target, ItemStack stack, RiftAction action) {
@@ -232,9 +278,10 @@ public class RiftItem extends Item {
         target.ejectPassengers();
 
         AnchorPoint anchor = readAnchor(player, actualTargetDimension);
-        double targetX = anchor != null ? anchor.x() : player.getX();
-        double targetY = anchor != null ? anchor.y() : safeEntryY(targetLevel, actualTargetDimension, targetX, player.getZ());
-        double targetZ = anchor != null ? anchor.z() : player.getZ();
+        EntryPoint targetEntryPoint = safeEntryPoint(targetLevel, actualTargetDimension, player.getX(), player.getZ());
+        double targetX = anchor != null ? anchor.x() : targetEntryPoint.x();
+        double targetY = anchor != null ? anchor.y() : targetEntryPoint.y();
+        double targetZ = anchor != null ? anchor.z() : targetEntryPoint.z();
 
         if (target.level().dimension().equals(actualTargetDimension)) {
             player.displayClientMessage(Component.translatable("message.mydimension.already_in_target_mind"), true);
@@ -490,6 +537,9 @@ public class RiftItem extends Item {
     }
 
     private record ReturnPoint(ResourceKey<Level> dimension, double x, double y, double z, float yRot, float xRot) {
+    }
+
+    private record EntryPoint(double x, double y, double z) {
     }
 
     public record AnchorPoint(ResourceKey<Level> dimension, double x, double y, double z) {

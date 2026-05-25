@@ -1,0 +1,11 @@
+{
+  "type": "mydimension:soaring_mind",
+  "generator": {
+    "type": "mydimension:no_structure_noise",
+    "biome_source": {
+      "type": "minecraft:multi_noise",
+      "preset": "minecraft:overworld"
+    },
+    "settings": "minecraft:floating_islands"
+  }
+}
