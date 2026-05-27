@@ -125,8 +125,22 @@ tasks.register('generatePlayerMindDimensions') {
                         generator: [
                                 type        : 'mydimension:soaring_islands',
                                 biome_source: [
-                                        type  : 'minecraft:multi_noise',
-                                        preset: 'minecraft:overworld'
+                                        type   : 'minecraft:checkerboard',
+                                        biomes : [
+                                                'minecraft:plains',
+                                                'minecraft:forest',
+                                                'minecraft:flower_forest',
+                                                'minecraft:birch_forest',
+                                                'minecraft:meadow',
+                                                'minecraft:cherry_grove',
+                                                'minecraft:snowy_plains',
+                                                'minecraft:grove',
+                                                'minecraft:desert',
+                                                'minecraft:savanna',
+                                                'minecraft:jungle',
+                                                'minecraft:windswept_hills'
+                                        ],
+                                        scale  : 3
                                 ]
                         ]
                 ]

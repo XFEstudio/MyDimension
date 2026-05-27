@@ -3,6 +3,7 @@ package com.xfestudio.mydimension.item;
 import com.xfestudio.mydimension.client.RiftClient;
 import com.xfestudio.mydimension.world.MindInstances;
 import com.xfestudio.mydimension.world.ModDimensions;
+import com.xfestudio.mydimension.world.SoaringMindChunkGenerator;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
@@ -195,6 +196,13 @@ public class RiftItem extends Item {
                 yRot = mindPoint.yRot();
                 xRot = mindPoint.xRot();
             }
+
+            if (ModDimensions.SOARING_MIND.equals(ModDimensions.baseMindDimension(actualTargetDimension))) {
+                EntryPoint safe = safeEntryPoint(targetLevel, actualTargetDimension, x, z);
+                x = safe.x();
+                y = safe.y();
+                z = safe.z();
+            }
         }
 
         if (returningFromSelectedMind) {
@@ -217,12 +225,13 @@ public class RiftItem extends Item {
     private static EntryPoint safeEntryPoint(ServerLevel level, ResourceKey<Level> dimension, double x, double z) {
         int blockX = (int) Math.floor(x);
         int blockZ = (int) Math.floor(z);
+        boolean soaringMind = ModDimensions.SOARING_MIND.equals(ModDimensions.baseMindDimension(dimension));
         int height = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, blockX, blockZ);
         if (height > level.getMinBuildHeight()) {
-            return new EntryPoint(x, height + 1.0D, z);
+            return new EntryPoint(x, soaringMind ? height : height + 1.0D, z);
         }
 
-        if (ModDimensions.SOARING_MIND.equals(ModDimensions.baseMindDimension(dimension))) {
+        if (soaringMind) {
             EntryPoint nearby = findNearbySurface(level, blockX, blockZ);
             if (nearby != null) {
                 return nearby;
@@ -233,35 +242,14 @@ public class RiftItem extends Item {
     }
 
     private static EntryPoint findNearbySurface(ServerLevel level, int centerX, int centerZ) {
-        for (int radius = 8; radius <= 128; radius += 8) {
-            EntryPoint best = null;
-            int bestDistance = Integer.MAX_VALUE;
-            for (int dx = -radius; dx <= radius; dx += 8) {
-                for (int dz = -radius; dz <= radius; dz += 8) {
-                    if (Math.abs(dx) != radius && Math.abs(dz) != radius) {
-                        continue;
-                    }
-
-                    int x = centerX + dx;
-                    int z = centerZ + dz;
-                    int height = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z);
-                    if (height <= level.getMinBuildHeight()) {
-                        continue;
-                    }
-
-                    int distance = dx * dx + dz * dz;
-                    if (distance < bestDistance) {
-                        bestDistance = distance;
-                        best = new EntryPoint(x + 0.5D, height + 1.0D, z + 0.5D);
-                    }
-                }
-            }
-            if (best != null) {
-                return best;
-            }
+        BlockPos surface = SoaringMindChunkGenerator.findNearestSurface(centerX, centerZ, 768);
+        if (surface == null) {
+            return null;
         }
 
-        return null;
+        int height = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, surface.getX(), surface.getZ());
+        double y = height > level.getMinBuildHeight() ? height : surface.getY();
+        return new EntryPoint(surface.getX() + 0.5D, y, surface.getZ() + 0.5D);
     }
 
     public static boolean sendToMind(ServerPlayer player, LivingEntity target, ItemStack stack, RiftAction action) {
