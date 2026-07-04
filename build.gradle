@@ -54,11 +54,11 @@ tasks.register('generatePlayerMindDimensions') {
     outputs.dir(outputDir)
 
     doLast {
-        def dimensionDir = outputDir.get().dir('data/mydimension/dimension/player_minds').asFile
+        def dimensionDir = outputDir.get().dir('data/mydimension/dimension').asFile
         delete(dimensionDir)
 
         def dimensions = [
-                ethereal_mind: [
+                e: [
                         type     : 'mydimension:ethereal_mind',
                         generator: [
                                 type    : 'minecraft:flat',
@@ -75,7 +75,7 @@ tasks.register('generatePlayerMindDimensions') {
                                 ]
                         ]
                 ],
-                mirror_mind  : [
+                m: [
                         type     : 'mydimension:mirror_mind',
                         generator: [
                                 type        : 'mydimension:no_structure_noise',
@@ -86,7 +86,7 @@ tasks.register('generatePlayerMindDimensions') {
                                 settings    : 'minecraft:overworld'
                         ]
                 ],
-                water_mind   : [
+                w: [
                         type     : 'mydimension:water_mind',
                         generator: [
                                 type    : 'minecraft:flat',
@@ -103,7 +103,7 @@ tasks.register('generatePlayerMindDimensions') {
                                 ]
                         ]
                 ],
-                nature_mind  : [
+                n: [
                         type     : 'mydimension:nature_mind',
                         generator: [
                                 type    : 'minecraft:flat',
@@ -120,7 +120,7 @@ tasks.register('generatePlayerMindDimensions') {
                                 ]
                         ]
                 ],
-                soaring_mind : [
+                s: [
                         type     : 'mydimension:soaring_mind',
                         generator: [
                                 type        : 'mydimension:soaring_islands',
@@ -147,8 +147,8 @@ tasks.register('generatePlayerMindDimensions') {
         ]
 
         (0..<2).each { slot ->
-            dimensions.each { name, json ->
-                def file = new File(dimensionDir, "slot_${slot}/${name}.json")
+            dimensions.each { code, json ->
+                def file = new File(dimensionDir, "p${slot}${code}.json")
                 file.parentFile.mkdirs()
                 file.text = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(json)) + System.lineSeparator()
             }

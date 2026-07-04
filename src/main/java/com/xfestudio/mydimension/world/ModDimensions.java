@@ -85,6 +85,22 @@ public class ModDimensions {
             "soaring_mind", SOARING_MIND
     );
 
+    private static final Map<String, ResourceKey<Level>> PRIVATE_MIND_CODES = Map.of(
+            "e", ETHEREAL_MIND,
+            "m", MIRROR_MIND,
+            "w", WATER_MIND,
+            "n", NATURE_MIND,
+            "s", SOARING_MIND
+    );
+
+    private static final Map<ResourceKey<Level>, String> PRIVATE_MIND_IDS = Map.of(
+            ETHEREAL_MIND, "e",
+            MIRROR_MIND, "m",
+            WATER_MIND, "w",
+            NATURE_MIND, "n",
+            SOARING_MIND, "s"
+    );
+
     public static boolean isMindDimension(ResourceKey<Level> dimension) {
         return baseMindDimension(dimension) != null;
     }
@@ -100,6 +116,11 @@ public class ModDimensions {
         }
 
         String path = location.getPath();
+        ResourceKey<Level> privateBase = basePrivateMindDimension(path);
+        if (privateBase != null) {
+            return privateBase;
+        }
+
         String prefix = "player_minds/slot_";
         if (!path.startsWith(prefix)) {
             return null;
@@ -113,6 +134,23 @@ public class ModDimensions {
         return MIND_IDS.get(path.substring(slash + 1));
     }
 
+    private static ResourceKey<Level> basePrivateMindDimension(String path) {
+        if (path.length() < 3 || path.charAt(0) != 'p') {
+            return null;
+        }
+
+        int index = 1;
+        while (index < path.length() && Character.isDigit(path.charAt(index))) {
+            index++;
+        }
+
+        if (index == 1 || index != path.length() - 1) {
+            return null;
+        }
+
+        return PRIVATE_MIND_CODES.get(path.substring(index));
+    }
+
     public static ResourceKey<Level> playerDimension(ResourceKey<Level> baseDimension, int slot) {
         ResourceKey<Level> base = baseMindDimension(baseDimension);
         if (base == null) {
@@ -121,7 +159,7 @@ public class ModDimensions {
 
         return ResourceKey.create(
                 Registries.DIMENSION,
-                new ResourceLocation(MyDimension.MOD_ID, "player_minds/slot_" + slot + "/" + base.location().getPath())
+                new ResourceLocation(MyDimension.MOD_ID, "p" + slot + PRIVATE_MIND_IDS.get(base))
         );
     }
 

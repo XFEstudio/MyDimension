@@ -119,7 +119,7 @@ public class MindInstances {
 
     private static void writeGeneratedDatapack(MinecraftServer server, int slotsNeeded) {
         Path datapackRoot = server.getWorldPath(LevelResource.DATAPACK_DIR).resolve(GENERATED_DATAPACK_NAME);
-        Path dimensionDir = datapackRoot.resolve("data").resolve(MyDimension.MOD_ID).resolve("dimension").resolve("player_minds");
+        Path dimensionDir = datapackRoot.resolve("data").resolve(MyDimension.MOD_ID).resolve("dimension");
         try {
             deleteDirectory(dimensionDir);
             Files.createDirectories(dimensionDir);
@@ -141,13 +141,12 @@ public class MindInstances {
     }
 
     private static void writeSlotDimensions(Path dimensionDir, int slot) throws IOException {
-        Path slotDir = dimensionDir.resolve("slot_" + slot);
-        Files.createDirectories(slotDir);
-        Files.writeString(slotDir.resolve("ethereal_mind.json"), etherealMindJson(), StandardCharsets.UTF_8);
-        Files.writeString(slotDir.resolve("mirror_mind.json"), mirrorMindJson(), StandardCharsets.UTF_8);
-        Files.writeString(slotDir.resolve("water_mind.json"), waterMindJson(), StandardCharsets.UTF_8);
-        Files.writeString(slotDir.resolve("nature_mind.json"), natureMindJson(), StandardCharsets.UTF_8);
-        Files.writeString(slotDir.resolve("soaring_mind.json"), soaringMindJson(), StandardCharsets.UTF_8);
+        Files.createDirectories(dimensionDir);
+        Files.writeString(dimensionDir.resolve("p" + slot + "e.json"), etherealMindJson(), StandardCharsets.UTF_8);
+        Files.writeString(dimensionDir.resolve("p" + slot + "m.json"), mirrorMindJson(), StandardCharsets.UTF_8);
+        Files.writeString(dimensionDir.resolve("p" + slot + "w.json"), waterMindJson(), StandardCharsets.UTF_8);
+        Files.writeString(dimensionDir.resolve("p" + slot + "n.json"), natureMindJson(), StandardCharsets.UTF_8);
+        Files.writeString(dimensionDir.resolve("p" + slot + "s.json"), soaringMindJson(), StandardCharsets.UTF_8);
     }
 
     private static void deleteDirectory(Path directory) throws IOException {
