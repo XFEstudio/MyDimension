@@ -24,11 +24,13 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.MobSpawnType;
+import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.GameRules;
 import net.minecraft.tags.FluidTags;
 import net.minecraftforge.event.CommandEvent;
 import net.minecraftforge.event.TickEvent;
+import net.minecraftforge.event.entity.EntityJoinLevelEvent;
 import net.minecraftforge.event.entity.living.MobSpawnEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
@@ -68,6 +70,20 @@ public class MyDimensionEvents {
         if (ModDimensions.isMindDimension(event.getLevel().getLevel().dimension())
                 && shouldBlockSpawn(entity, event.getSpawnType())) {
             event.setSpawnCancelled(true);
+        }
+    }
+
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public void preventBypassedHostileSpawnsInMind(EntityJoinLevelEvent event) {
+        if (event.getLevel().isClientSide() || !ModDimensions.isMindDimension(event.getLevel().dimension())) {
+            return;
+        }
+
+        if (event.getEntity() instanceof Mob mob
+                && isHostileMob(mob)
+                && !mob.getPersistentData().getBoolean(RiftItem.IMPORTED_TO_ETHEREAL_MIND)
+                && !event.loadedFromDisk()) {
+            event.setCanceled(true);
         }
     }
 
@@ -241,6 +257,10 @@ public class MyDimensionEvents {
 
     private static boolean shouldBlockSpawn(Mob entity, MobSpawnType spawnType) {
         return !entity.getPersistentData().getBoolean(RiftItem.IMPORTED_TO_ETHEREAL_MIND) && !isPlayerCreatedSpawn(spawnType);
+    }
+
+    private static boolean isHostileMob(Mob entity) {
+        return entity instanceof Enemy || entity.getType().getCategory() == net.minecraft.world.entity.MobCategory.MONSTER;
     }
 
     private static boolean isPlayerCreatedSpawn(MobSpawnType spawnType) {
