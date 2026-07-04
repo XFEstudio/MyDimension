@@ -28,6 +28,10 @@ public class MindInstances {
     private static final String GENERATED_DATAPACK_NAME = "mydimension_dynamic_player_minds";
 
     public static ResourceKey<Level> dimensionFor(ServerPlayer player, ResourceKey<Level> baseDimension) {
+        if (!PrivateMindFeature.isEnabled()) {
+            return baseDimension;
+        }
+
         int slot = slotFor(player);
         if (slot < 0 || slot >= MAX_PLAYER_SLOTS) {
             return baseDimension;
@@ -44,6 +48,10 @@ public class MindInstances {
     }
 
     public static int slotFor(ServerPlayer player) {
+        if (!PrivateMindFeature.isEnabled()) {
+            return -1;
+        }
+
         MinecraftServer server = player.getServer();
         MindInstanceData data = data(server);
         int slot = data.slotFor(player.getUUID());

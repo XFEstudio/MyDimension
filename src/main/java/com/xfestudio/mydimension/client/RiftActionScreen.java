@@ -7,6 +7,7 @@ import com.xfestudio.mydimension.network.ModNetwork;
 import com.xfestudio.mydimension.network.SetRiftActionPacket;
 import com.xfestudio.mydimension.registry.ModItems;
 import com.xfestudio.mydimension.world.ModDimensions;
+import com.xfestudio.mydimension.world.PrivateMindFeature;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
@@ -34,6 +35,7 @@ public class RiftActionScreen extends Screen {
     private Page page = Page.TRAVEL_PRIVATE;
     private boolean inMindDimension;
     private boolean creative;
+    private boolean privateMindsEnabled;
 
     public RiftActionScreen() {
         super(Component.translatable("screen.mydimension.rift_actions"));
@@ -43,6 +45,7 @@ public class RiftActionScreen extends Screen {
     protected void init() {
         inMindDimension = minecraft != null && minecraft.player != null && ModDimensions.isMindDimension(minecraft.player.level().dimension());
         creative = minecraft != null && minecraft.player != null && minecraft.player.isCreative();
+        privateMindsEnabled = PrivateMindFeature.isEnabled();
 
         int centerX = width / 2;
         int centerY = height / 2;
@@ -77,12 +80,18 @@ public class RiftActionScreen extends Screen {
     }
 
     private List<Page> visiblePages() {
-        List<Page> pages = new ArrayList<>(List.of(Page.TRAVEL_PRIVATE, Page.TRAVEL_SHARED, Page.MOB_PRIVATE, Page.MOB_SHARED));
-        if (creative) {
+        List<Page> pages = privateMindsEnabled
+                ? new ArrayList<>(List.of(Page.TRAVEL_PRIVATE, Page.TRAVEL_SHARED, Page.MOB_PRIVATE, Page.MOB_SHARED))
+                : new ArrayList<>(List.of(Page.TRAVEL_SHARED, Page.MOB_SHARED));
+
+        if (privateMindsEnabled && creative) {
             pages.add(Page.COPY_SHARED);
-        } else if (page == Page.COPY_SHARED) {
-            page = Page.TRAVEL_PRIVATE;
         }
+
+        if (!pages.contains(page)) {
+            page = pages.get(0);
+        }
+
         return pages;
     }
 
@@ -135,7 +144,7 @@ public class RiftActionScreen extends Screen {
 
     private RiftAction getSelectedAction() {
         if (minecraft == null || minecraft.player == null) {
-            return RiftAction.ETHEREAL_MIND;
+            return privateMindsEnabled ? RiftAction.ETHEREAL_MIND : RiftAction.SHARED_ETHEREAL_MIND;
         }
 
         ItemStack mainHand = minecraft.player.getMainHandItem();
@@ -144,7 +153,7 @@ public class RiftActionScreen extends Screen {
         }
 
         ItemStack offHand = minecraft.player.getOffhandItem();
-        return offHand.is(ModItems.RIFT.get()) ? RiftItem.getSelectedAction(offHand) : RiftAction.ETHEREAL_MIND;
+        return offHand.is(ModItems.RIFT.get()) ? RiftItem.getSelectedAction(offHand) : (privateMindsEnabled ? RiftAction.ETHEREAL_MIND : RiftAction.SHARED_ETHEREAL_MIND);
     }
 
     private void select(RiftAction action) {
