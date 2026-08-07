@@ -194,7 +194,7 @@ public class RiftActionScreen extends Screen {
 
         private void renderIcon(GuiGraphics graphics, int x, int y) {
             if (action == RiftAction.SET_ANCHOR) {
-                graphics.blit(ANCHOR_ICON, x, y, 0, 0, 16, 16, 32, 32);
+                graphics.blit(ANCHOR_ICON, x, y, 0, 0, 16, 16, 16, 16);
             } else if (action.sendsMob()) {
                 graphics.blit(PORTAL_ICON, x, y, 0, 0, 16, 16, 16, 512);
             } else {
