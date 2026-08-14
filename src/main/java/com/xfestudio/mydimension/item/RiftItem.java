@@ -2,7 +2,9 @@ package com.xfestudio.mydimension.item;
 
 import com.xfestudio.mydimension.client.RiftClient;
 import com.xfestudio.mydimension.world.MindInstances;
+import com.xfestudio.mydimension.world.MindTeamAccess;
 import com.xfestudio.mydimension.world.ModDimensions;
+import com.xfestudio.mydimension.world.PrivateMindFeature;
 import com.xfestudio.mydimension.world.SoaringMindChunkGenerator;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
@@ -35,6 +37,7 @@ import net.minecraftforge.common.util.ITeleporter;
 import net.minecraftforge.fml.DistExecutor;
 
 import java.util.function.Function;
+import java.util.UUID;
 
 public class RiftItem extends Item {
     public static final double ETHEREAL_SURFACE_Y = 66.0D;
@@ -43,6 +46,8 @@ public class RiftItem extends Item {
     private static final String SELECTED_ACTION_TAG = "SelectedAction";
     private static final String RETURN_POINT_TAG = "ReturnPoint";
     private static final String MIND_POINTS_TAG = "MindPoints";
+    private static final String TEAM_OWNER_TAG = "TeamMindOwner";
+    private static final String TEAM_DIMENSION_TAG = "TeamMindDimension";
     private static final String PLAYER_ANCHORS_TAG = "mydimension.RiftAnchors";
     private static final String RETURN_DIMENSION_TAG = "Dimension";
     private static final String RETURN_X_TAG = "X";
@@ -111,6 +116,17 @@ public class RiftItem extends Item {
 
     public static void setSelectedAction(ItemStack stack, RiftAction action) {
         stack.getOrCreateTag().putString(SELECTED_ACTION_TAG, action.id());
+        if (action != RiftAction.VISIT_TEAM_MIND) {
+            stack.getOrCreateTag().remove(TEAM_OWNER_TAG);
+            stack.getOrCreateTag().remove(TEAM_DIMENSION_TAG);
+        }
+    }
+
+    public static void setTeamMindTarget(ItemStack stack, UUID owner, ResourceKey<Level> baseDimension) {
+        CompoundTag tag = stack.getOrCreateTag();
+        tag.putString(SELECTED_ACTION_TAG, RiftAction.VISIT_TEAM_MIND.id());
+        tag.putUUID(TEAM_OWNER_TAG, owner);
+        tag.putString(TEAM_DIMENSION_TAG, baseDimension.location().toString());
     }
 
     public static RiftAction getSelectedAction(ItemStack stack) {
@@ -126,6 +142,11 @@ public class RiftItem extends Item {
         RiftAction action = getSelectedAction(stack);
         if (action == RiftAction.SET_ANCHOR) {
             setAnchor(player);
+            return;
+        }
+
+        if (action == RiftAction.VISIT_TEAM_MIND) {
+            teleportToTeamMind(player, stack);
             return;
         }
 
@@ -147,10 +168,41 @@ public class RiftItem extends Item {
 
     private static void teleport(ServerPlayer player, ItemStack stack, RiftAction action) {
         ResourceKey<Level> selectedDimension = action.targetDimension();
+        ResourceKey<Level> actualTargetDimension = action.usesSharedDimension()
+                ? selectedDimension
+                : MindInstances.dimensionFor(player, selectedDimension);
+        teleportToResolvedMind(player, stack, selectedDimension, actualTargetDimension);
+    }
+
+    private static void teleportToTeamMind(ServerPlayer player, ItemStack stack) {
+        TeamMindTarget target = readTeamMindTarget(stack);
+        if (!PrivateMindFeature.isEnabled() || target == null) {
+            player.displayClientMessage(Component.translatable("message.mydimension.team.unavailable"), true);
+            return;
+        }
+
+        ResourceKey<Level> actualTargetDimension = MindInstances.dimensionForOwner(
+                player.getServer(), target.owner(), target.baseDimension());
+        if (actualTargetDimension == null) {
+            player.displayClientMessage(Component.translatable("message.mydimension.team.no_slot"), true);
+            return;
+        }
+
+        boolean returning = player.level().dimension().equals(actualTargetDimension);
+        if (!returning && !MindTeamAccess.hasAccess(player.getServer(), target.owner(), player.getUUID())) {
+            player.displayClientMessage(Component.translatable("message.mydimension.team.not_allowed"), true);
+            return;
+        }
+
+        teleportToResolvedMind(player, stack, target.baseDimension(), actualTargetDimension);
+    }
+
+    private static void teleportToResolvedMind(ServerPlayer player, ItemStack stack,
+                                               ResourceKey<Level> selectedDimension,
+                                               ResourceKey<Level> actualTargetDimension) {
         ServerLevel currentLevel = player.serverLevel();
         ResourceKey<Level> currentDimension = currentLevel.dimension();
         ResourceKey<Level> currentMindBase = ModDimensions.baseMindDimension(currentDimension);
-        ResourceKey<Level> actualTargetDimension = action.usesSharedDimension() ? selectedDimension : MindInstances.dimensionFor(player, selectedDimension);
         boolean returningFromSelectedMind = currentDimension.equals(actualTargetDimension) && selectedDimension.equals(currentMindBase);
         ReturnPoint returnPoint = returningFromSelectedMind ? readPoint(stack, RETURN_POINT_TAG) : null;
         ReturnPoint mindPoint = returningFromSelectedMind ? null : readMindPoint(stack, actualTargetDimension);
@@ -212,6 +264,26 @@ public class RiftItem extends Item {
         targetLevel.playSound(null, player.blockPosition(), SoundEvents.ENDERMAN_TELEPORT, SoundSource.PLAYERS, 1.0F, 1.0F);
         player.teleportTo(targetLevel, x, y, z, yRot, xRot);
         targetLevel.playSound(null, BlockPos.containing(x, y, z), SoundEvents.ENDERMAN_TELEPORT, SoundSource.PLAYERS, 1.0F, 1.0F);
+    }
+
+    private static TeamMindTarget readTeamMindTarget(ItemStack stack) {
+        CompoundTag tag = stack.getTag();
+        if (tag == null || !tag.hasUUID(TEAM_OWNER_TAG)) {
+            return null;
+        }
+
+        ResourceLocation location = ResourceLocation.tryParse(tag.getString(TEAM_DIMENSION_TAG));
+        if (location == null) {
+            return null;
+        }
+
+        ResourceKey<Level> dimension = ResourceKey.create(Registries.DIMENSION, location);
+        ResourceKey<Level> baseDimension = ModDimensions.baseMindDimension(dimension);
+        if (baseDimension == null || !baseDimension.equals(dimension)) {
+            return null;
+        }
+
+        return new TeamMindTarget(tag.getUUID(TEAM_OWNER_TAG), baseDimension);
     }
 
     private static double overworldSpawnY(ServerLevel level) {
@@ -528,6 +600,9 @@ public class RiftItem extends Item {
     }
 
     private record EntryPoint(double x, double y, double z) {
+    }
+
+    private record TeamMindTarget(UUID owner, ResourceKey<Level> baseDimension) {
     }
 
     public record AnchorPoint(ResourceKey<Level> dimension, double x, double y, double z) {

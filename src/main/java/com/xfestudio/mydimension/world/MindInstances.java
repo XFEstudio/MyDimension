@@ -47,14 +47,34 @@ public class MindInstances {
         return baseDimension;
     }
 
+    public static ResourceKey<Level> dimensionForOwner(MinecraftServer server, UUID owner, ResourceKey<Level> baseDimension) {
+        if (!PrivateMindFeature.isEnabled()) {
+            return baseDimension;
+        }
+
+        int slot = slotFor(server, owner);
+        if (slot < 0 || slot >= MAX_PLAYER_SLOTS) {
+            return null;
+        }
+
+        return ModDimensions.playerDimension(baseDimension, slot);
+    }
+
     public static int slotFor(ServerPlayer player) {
         if (!PrivateMindFeature.isEnabled()) {
             return -1;
         }
 
-        MinecraftServer server = player.getServer();
+        return slotFor(player.getServer(), player.getUUID());
+    }
+
+    public static int slotFor(MinecraftServer server, UUID owner) {
+        if (!PrivateMindFeature.isEnabled()) {
+            return -1;
+        }
+
         MindInstanceData data = data(server);
-        int slot = data.slotFor(player.getUUID());
+        int slot = data.slotFor(owner);
         if (slot >= BUILT_IN_PLAYER_SLOTS) {
             data.requestSlots(server, slot + 1);
         }

@@ -33,7 +33,8 @@ public enum RiftAction {
     COPY_SHARED_WATER("copy_shared_water", "action.mydimension.copy_shared_water", ModDimensions.WATER_MIND, false, false, true),
     COPY_SHARED_NATURE("copy_shared_nature", "action.mydimension.copy_shared_nature", ModDimensions.NATURE_MIND, false, false, true),
     COPY_SHARED_SOARING("copy_shared_soaring", "action.mydimension.copy_shared_soaring", ModDimensions.SOARING_MIND, false, false, true),
-    SET_ANCHOR("set_anchor", "action.mydimension.set_anchor", null, false, false, false);
+    SET_ANCHOR("set_anchor", "action.mydimension.set_anchor", null, false, false, false),
+    VISIT_TEAM_MIND("visit_team_mind", "action.mydimension.visit_team_mind", null, false, false, false);
 
     private final String id;
     private final String translationKey;
