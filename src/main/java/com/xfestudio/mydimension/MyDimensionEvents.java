@@ -235,7 +235,7 @@ public class MyDimensionEvents {
         event.setCanceled(true);
 
         if (!player.level().isClientSide()) {
-            RiftItem.sendToMind(player, target, stack, action.targetDimension());
+            RiftItem.sendToMind(player, target, stack, action);
         }
     }
 

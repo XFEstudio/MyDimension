@@ -1,47 +1,38 @@
 {
   "parent": "minecraft:recipes/root",
   "criteria": {
-    "has_clock": {
+    "has_crying_obsidian": {
       "trigger": "minecraft:inventory_changed",
       "conditions": {
         "items": [
           {
             "items": [
-              "minecraft:clock"
+              "minecraft:crying_obsidian"
             ]
           }
         ]
       }
     },
-    "has_ender_pearl": {
+    "has_amethyst": {
       "trigger": "minecraft:inventory_changed",
       "conditions": {
         "items": [
           {
             "items": [
-              "minecraft:ender_pearl"
+              "minecraft:amethyst_shard"
             ]
           }
         ]
-      }
-    },
-    "has_the_recipe": {
-      "trigger": "minecraft:recipe_unlocked",
-      "conditions": {
-        "recipe": "mydimension:rift"
       }
     }
   },
   "requirements": [
-    [
-      "has_clock",
-      "has_ender_pearl",
-      "has_the_recipe"
-    ]
+    ["has_crying_obsidian"],
+    ["has_amethyst"]
   ],
   "rewards": {
     "recipes": [
-      "mydimension:rift"
+      "mydimension:mind_portal_frame"
     ]
   }
 }

@@ -1,7 +1,13 @@
 package com.xfestudio.mydimension.item;
 
 import com.xfestudio.mydimension.client.RiftClient;
+import com.xfestudio.mydimension.world.MindInstances;
+import com.xfestudio.mydimension.world.MindTeamAccess;
+import com.xfestudio.mydimension.world.MindType;
 import com.xfestudio.mydimension.world.ModDimensions;
+import com.xfestudio.mydimension.world.PrivateMindFeature;
+import com.xfestudio.mydimension.world.portal.MindPortalManager;
+import com.xfestudio.mydimension.world.SoaringMindChunkGenerator;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
@@ -21,7 +27,10 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.projectile.ProjectileUtil;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.context.UseOnContext;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.portal.PortalInfo;
 import net.minecraft.world.phys.AABB;
@@ -32,13 +41,17 @@ import net.minecraftforge.common.util.ITeleporter;
 import net.minecraftforge.fml.DistExecutor;
 
 import java.util.function.Function;
+import java.util.UUID;
 
 public class RiftItem extends Item {
     public static final double ETHEREAL_SURFACE_Y = 66.0D;
     public static final String IMPORTED_TO_ETHEREAL_MIND = "mydimension_imported_to_ethereal_mind";
+    private static final int COPY_CHUNK_RADIUS = 1;
     private static final String SELECTED_ACTION_TAG = "SelectedAction";
     private static final String RETURN_POINT_TAG = "ReturnPoint";
     private static final String MIND_POINTS_TAG = "MindPoints";
+    private static final String TEAM_OWNER_TAG = "TeamMindOwner";
+    private static final String TEAM_DIMENSION_TAG = "TeamMindDimension";
     private static final String PLAYER_ANCHORS_TAG = "mydimension.RiftAnchors";
     private static final String RETURN_DIMENSION_TAG = "Dimension";
     private static final String RETURN_X_TAG = "X";
@@ -99,7 +112,7 @@ public class RiftItem extends Item {
         }
 
         if (player instanceof ServerPlayer serverPlayer) {
-            sendToMind(serverPlayer, target, stack, action.targetDimension());
+            sendToMind(serverPlayer, target, stack, action);
         }
 
         return InteractionResult.CONSUME;
@@ -107,6 +120,76 @@ public class RiftItem extends Item {
 
     public static void setSelectedAction(ItemStack stack, RiftAction action) {
         stack.getOrCreateTag().putString(SELECTED_ACTION_TAG, action.id());
+        if (action != RiftAction.VISIT_TEAM_MIND) {
+            stack.getOrCreateTag().remove(TEAM_OWNER_TAG);
+            stack.getOrCreateTag().remove(TEAM_DIMENSION_TAG);
+        }
+    }
+
+    @Override
+    public InteractionResult useOn(UseOnContext context) {
+        BlockState state = context.getLevel().getBlockState(context.getClickedPos());
+        if (state.is(com.xfestudio.mydimension.registry.ModBlocks.MIND_PORTAL_FRAME.get())
+                || state.is(com.xfestudio.mydimension.registry.ModBlocks.MIND_PORTAL.get())) {
+            if (context.getLevel().isClientSide()) {
+                return InteractionResult.SUCCESS;
+            }
+            return MindPortalManager.useRiftOnPortal(context);
+        }
+        return super.useOn(context);
+    }
+
+    public static void setTeamMindTarget(ItemStack stack, UUID owner, ResourceKey<Level> baseDimension) {
+        CompoundTag tag = stack.getOrCreateTag();
+        tag.putString(SELECTED_ACTION_TAG, RiftAction.VISIT_TEAM_MIND.id());
+        tag.putUUID(TEAM_OWNER_TAG, owner);
+        tag.putString(TEAM_DIMENSION_TAG, baseDimension.location().toString());
+    }
+
+    public static PortalTarget resolvePortalTarget(ServerPlayer player, ItemStack stack) {
+        RiftAction action = getSelectedAction(stack);
+        ResourceKey<Level> baseDimension;
+        ResourceKey<Level> actualDimension;
+        UUID targetOwner = null;
+        Component displayName;
+
+        if (action == RiftAction.VISIT_TEAM_MIND) {
+            TeamMindTarget teamTarget = readTeamMindTarget(stack);
+            if (teamTarget == null || !MindTeamAccess.hasAccess(player.getServer(), teamTarget.owner(), player.getUUID())) {
+                player.displayClientMessage(Component.translatable("message.mydimension.team.not_allowed"), true);
+                return null;
+            }
+            baseDimension = teamTarget.baseDimension();
+            actualDimension = MindInstances.dimensionForOwner(player.getServer(), teamTarget.owner(), baseDimension);
+            targetOwner = teamTarget.owner();
+            String ownerName = MindTeamAccess.entrancesFor(player).stream()
+                    .filter(entry -> entry.id().equals(teamTarget.owner()))
+                    .map(MindTeamAccess.PlayerEntry::name)
+                    .findFirst()
+                    .orElse("?");
+            MindType type = MindType.fromBaseDimension(baseDimension);
+            displayName = Component.translatable("message.mydimension.portal.team_target", ownerName,
+                    type == null ? Component.literal(baseDimension.location().toString()) : type.displayName());
+        } else if (action.teleportsPlayer()) {
+            baseDimension = action.targetDimension();
+            if (action.usesSharedDimension()) {
+                actualDimension = baseDimension;
+            } else {
+                targetOwner = player.getUUID();
+                actualDimension = MindInstances.dimensionForOwner(player.getServer(), player.getUUID(), baseDimension);
+            }
+            MindType type = MindType.fromBaseDimension(baseDimension);
+            displayName = type == null ? Component.literal(baseDimension.location().toString()) : type.displayName();
+        } else {
+            player.displayClientMessage(Component.translatable("message.mydimension.portal.invalid_target"), true);
+            return null;
+        }
+
+        if (actualDimension == null) {
+            player.displayClientMessage(Component.translatable("message.mydimension.team.no_slot"), true);
+            return null;
+        }
+        return new PortalTarget(baseDimension, actualDimension, targetOwner, displayName);
     }
 
     public static RiftAction getSelectedAction(ItemStack stack) {
@@ -125,24 +208,68 @@ public class RiftItem extends Item {
             return;
         }
 
+        if (action == RiftAction.VISIT_TEAM_MIND) {
+            teleportToTeamMind(player, stack);
+            return;
+        }
+
+        if (action.copiesSharedDimension()) {
+            copySharedDimension(player, action);
+            return;
+        }
+
         if (action.sendsMob()) {
             LivingEntity target = findLookedAtLivingEntity(player);
-            if (target == null || !sendToMind(player, target, stack, action.targetDimension())) {
+            if (target == null || !sendToMind(player, target, stack, action)) {
                 player.displayClientMessage(Component.translatable("message.mydimension.no_mob_target"), true);
             }
             return;
         }
 
-        teleport(player, stack, action.targetDimension());
+        teleport(player, stack, action);
     }
 
-    private static void teleport(ServerPlayer player, ItemStack stack, ResourceKey<Level> selectedDimension) {
+    private static void teleport(ServerPlayer player, ItemStack stack, RiftAction action) {
+        ResourceKey<Level> selectedDimension = action.targetDimension();
+        ResourceKey<Level> actualTargetDimension = action.usesSharedDimension()
+                ? selectedDimension
+                : MindInstances.dimensionFor(player, selectedDimension);
+        teleportToResolvedMind(player, stack, selectedDimension, actualTargetDimension);
+    }
+
+    private static void teleportToTeamMind(ServerPlayer player, ItemStack stack) {
+        TeamMindTarget target = readTeamMindTarget(stack);
+        if (!PrivateMindFeature.isEnabled() || target == null) {
+            player.displayClientMessage(Component.translatable("message.mydimension.team.unavailable"), true);
+            return;
+        }
+
+        ResourceKey<Level> actualTargetDimension = MindInstances.dimensionForOwner(
+                player.getServer(), target.owner(), target.baseDimension());
+        if (actualTargetDimension == null) {
+            player.displayClientMessage(Component.translatable("message.mydimension.team.no_slot"), true);
+            return;
+        }
+
+        boolean returning = player.level().dimension().equals(actualTargetDimension);
+        if (!returning && !MindTeamAccess.hasAccess(player.getServer(), target.owner(), player.getUUID())) {
+            player.displayClientMessage(Component.translatable("message.mydimension.team.not_allowed"), true);
+            return;
+        }
+
+        teleportToResolvedMind(player, stack, target.baseDimension(), actualTargetDimension);
+    }
+
+    private static void teleportToResolvedMind(ServerPlayer player, ItemStack stack,
+                                               ResourceKey<Level> selectedDimension,
+                                               ResourceKey<Level> actualTargetDimension) {
         ServerLevel currentLevel = player.serverLevel();
         ResourceKey<Level> currentDimension = currentLevel.dimension();
-        boolean returningFromSelectedMind = currentDimension.equals(selectedDimension);
+        ResourceKey<Level> currentMindBase = ModDimensions.baseMindDimension(currentDimension);
+        boolean returningFromSelectedMind = currentDimension.equals(actualTargetDimension) && selectedDimension.equals(currentMindBase);
         ReturnPoint returnPoint = returningFromSelectedMind ? readPoint(stack, RETURN_POINT_TAG) : null;
-        ReturnPoint mindPoint = returningFromSelectedMind ? null : readMindPoint(stack, selectedDimension);
-        ServerLevel targetLevel = returningFromSelectedMind ? getReturnLevel(player, returnPoint) : player.getServer().getLevel(selectedDimension);
+        ReturnPoint mindPoint = returningFromSelectedMind ? null : readMindPoint(stack, actualTargetDimension);
+        ServerLevel targetLevel = returningFromSelectedMind ? getReturnLevel(player, returnPoint) : player.getServer().getLevel(actualTargetDimension);
 
         if (targetLevel == null) {
             player.displayClientMessage(Component.translatable("message.mydimension.missing_dimension"), true);
@@ -151,7 +278,10 @@ public class RiftItem extends Item {
 
         double x = player.getX();
         double z = player.getZ();
-        double y = returningFromSelectedMind ? overworldSpawnY(targetLevel) : safeEntryY(targetLevel, selectedDimension, x, z);
+        EntryPoint entryPoint = returningFromSelectedMind ? new EntryPoint(x, overworldSpawnY(targetLevel), z) : safeEntryPoint(targetLevel, actualTargetDimension, x, z);
+        x = entryPoint.x();
+        double y = entryPoint.y();
+        z = entryPoint.z();
         float yRot = player.getYRot();
         float xRot = player.getXRot();
 
@@ -181,6 +311,13 @@ public class RiftItem extends Item {
                 yRot = mindPoint.yRot();
                 xRot = mindPoint.xRot();
             }
+
+            if (ModDimensions.SOARING_MIND.equals(ModDimensions.baseMindDimension(actualTargetDimension))) {
+                EntryPoint safe = safeEntryPoint(targetLevel, actualTargetDimension, x, z);
+                x = safe.x();
+                y = safe.y();
+                z = safe.z();
+            }
         }
 
         if (returningFromSelectedMind) {
@@ -192,30 +329,70 @@ public class RiftItem extends Item {
         targetLevel.playSound(null, BlockPos.containing(x, y, z), SoundEvents.ENDERMAN_TELEPORT, SoundSource.PLAYERS, 1.0F, 1.0F);
     }
 
+    private static TeamMindTarget readTeamMindTarget(ItemStack stack) {
+        CompoundTag tag = stack.getTag();
+        if (tag == null || !tag.hasUUID(TEAM_OWNER_TAG)) {
+            return null;
+        }
+
+        ResourceLocation location = ResourceLocation.tryParse(tag.getString(TEAM_DIMENSION_TAG));
+        if (location == null) {
+            return null;
+        }
+
+        ResourceKey<Level> dimension = ResourceKey.create(Registries.DIMENSION, location);
+        ResourceKey<Level> baseDimension = ModDimensions.baseMindDimension(dimension);
+        if (baseDimension == null || !baseDimension.equals(dimension)) {
+            return null;
+        }
+
+        return new TeamMindTarget(tag.getUUID(TEAM_OWNER_TAG), baseDimension);
+    }
+
     private static double overworldSpawnY(ServerLevel level) {
         return level.getSharedSpawnPos().getY() + 1.0D;
     }
 
     private static double safeEntryY(ServerLevel level, ResourceKey<Level> dimension, double x, double z) {
-        int blockX = (int) Math.floor(x);
-        int blockZ = (int) Math.floor(z);
-        int height = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, blockX, blockZ);
-        if (height > level.getMinBuildHeight()) {
-            return height + 1.0D;
-        }
-
-        return ModDimensions.entryHeight(dimension);
+        return safeEntryPoint(level, dimension, x, z).y();
     }
 
-    public static boolean sendToMind(ServerPlayer player, LivingEntity target, ItemStack stack, ResourceKey<Level> targetDimension) {
-        ServerLevel targetLevel = player.getServer().getLevel(targetDimension);
-        if (targetLevel == null) {
-            player.displayClientMessage(Component.translatable("message.mydimension.missing_dimension"), true);
-            return false;
+    private static EntryPoint safeEntryPoint(ServerLevel level, ResourceKey<Level> dimension, double x, double z) {
+        int blockX = (int) Math.floor(x);
+        int blockZ = (int) Math.floor(z);
+        boolean soaringMind = ModDimensions.SOARING_MIND.equals(ModDimensions.baseMindDimension(dimension));
+        int height = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, blockX, blockZ);
+        if (height > level.getMinBuildHeight()) {
+            return new EntryPoint(x, soaringMind ? height : height + 1.0D, z);
         }
 
-        if (target.level().dimension().equals(targetDimension)) {
-            player.displayClientMessage(Component.translatable("message.mydimension.already_in_target_mind"), true);
+        if (soaringMind) {
+            EntryPoint nearby = findNearbySurface(level, blockX, blockZ);
+            if (nearby != null) {
+                return nearby;
+            }
+        }
+
+        return new EntryPoint(x, ModDimensions.entryHeight(dimension), z);
+    }
+
+    private static EntryPoint findNearbySurface(ServerLevel level, int centerX, int centerZ) {
+        BlockPos surface = SoaringMindChunkGenerator.findNearestSurface(centerX, centerZ, 768);
+        if (surface == null) {
+            return null;
+        }
+
+        int height = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, surface.getX(), surface.getZ());
+        double y = height > level.getMinBuildHeight() ? height : surface.getY();
+        return new EntryPoint(surface.getX() + 0.5D, y, surface.getZ() + 0.5D);
+    }
+
+    public static boolean sendToMind(ServerPlayer player, LivingEntity target, ItemStack stack, RiftAction action) {
+        ResourceKey<Level> targetDimension = action.targetDimension();
+        ResourceKey<Level> actualTargetDimension = action.usesSharedDimension() ? targetDimension : MindInstances.dimensionFor(player, targetDimension);
+        ServerLevel targetLevel = player.getServer().getLevel(actualTargetDimension);
+        if (targetLevel == null) {
+            player.displayClientMessage(Component.translatable("message.mydimension.missing_dimension"), true);
             return false;
         }
 
@@ -223,10 +400,17 @@ public class RiftItem extends Item {
         target.stopRiding();
         target.ejectPassengers();
 
-        AnchorPoint anchor = readAnchor(player, targetDimension);
-        double targetX = anchor != null ? anchor.x() : player.getX();
-        double targetY = anchor != null ? anchor.y() : safeEntryY(targetLevel, targetDimension, player.getX(), player.getZ());
-        double targetZ = anchor != null ? anchor.z() : player.getZ();
+        AnchorPoint anchor = readAnchor(player, actualTargetDimension);
+        EntryPoint targetEntryPoint = safeEntryPoint(targetLevel, actualTargetDimension, player.getX(), player.getZ());
+        double targetX = anchor != null ? anchor.x() : targetEntryPoint.x();
+        double targetY = anchor != null ? anchor.y() : targetEntryPoint.y();
+        double targetZ = anchor != null ? anchor.z() : targetEntryPoint.z();
+
+        if (target.level().dimension().equals(actualTargetDimension)) {
+            player.displayClientMessage(Component.translatable("message.mydimension.already_in_target_mind"), true);
+            return false;
+        }
+
         Entity moved = target.changeDimension(targetLevel, new EtherealMindTeleporter(targetX, targetY, targetZ));
         if (moved != null) {
             moved.getPersistentData().putBoolean(IMPORTED_TO_ETHEREAL_MIND, true);
@@ -236,6 +420,83 @@ public class RiftItem extends Item {
         }
 
         return false;
+    }
+
+    private static void copySharedDimension(ServerPlayer player, RiftAction action) {
+        if (!player.isCreative()) {
+            player.displayClientMessage(Component.translatable("message.mydimension.copy_creative_only"), true);
+            return;
+        }
+
+        ResourceKey<Level> sourceDimension = action.targetDimension();
+        ResourceKey<Level> targetDimension = MindInstances.dimensionFor(player, sourceDimension);
+        if (sourceDimension.equals(targetDimension)) {
+            player.displayClientMessage(Component.translatable("message.mydimension.copy_private_unavailable"), true);
+            return;
+        }
+
+        ServerLevel sourceLevel = player.getServer().getLevel(sourceDimension);
+        ServerLevel targetLevel = player.getServer().getLevel(targetDimension);
+        if (sourceLevel == null || targetLevel == null) {
+            player.displayClientMessage(Component.translatable("message.mydimension.missing_dimension"), true);
+            return;
+        }
+
+        int copiedBlocks = copyNearbyBlocks(sourceLevel, targetLevel, player.blockPosition());
+        player.displayClientMessage(Component.translatable("message.mydimension.copy_done", copiedBlocks), true);
+    }
+
+    private static int copyNearbyBlocks(ServerLevel sourceLevel, ServerLevel targetLevel, BlockPos center) {
+        int centerChunkX = center.getX() >> 4;
+        int centerChunkZ = center.getZ() >> 4;
+        int minY = Math.max(sourceLevel.getMinBuildHeight(), targetLevel.getMinBuildHeight());
+        int maxY = Math.min(sourceLevel.getMaxBuildHeight(), targetLevel.getMaxBuildHeight());
+        BlockPos.MutableBlockPos sourcePos = new BlockPos.MutableBlockPos();
+        BlockPos.MutableBlockPos targetPos = new BlockPos.MutableBlockPos();
+        int copied = 0;
+
+        for (int chunkX = centerChunkX - COPY_CHUNK_RADIUS; chunkX <= centerChunkX + COPY_CHUNK_RADIUS; chunkX++) {
+            for (int chunkZ = centerChunkZ - COPY_CHUNK_RADIUS; chunkZ <= centerChunkZ + COPY_CHUNK_RADIUS; chunkZ++) {
+                sourceLevel.getChunk(chunkX, chunkZ);
+                targetLevel.getChunk(chunkX, chunkZ);
+
+                int minX = chunkX << 4;
+                int minZ = chunkZ << 4;
+                for (int x = minX; x < minX + 16; x++) {
+                    for (int z = minZ; z < minZ + 16; z++) {
+                        for (int y = minY; y < maxY; y++) {
+                            sourcePos.set(x, y, z);
+                            targetPos.set(x, y, z);
+                            var state = sourceLevel.getBlockState(sourcePos);
+                            targetLevel.setBlock(targetPos, state, 2);
+                            copyBlockEntity(sourceLevel, targetLevel, sourcePos, targetPos);
+                            copied++;
+                        }
+                    }
+                }
+            }
+        }
+
+        return copied;
+    }
+
+    private static void copyBlockEntity(ServerLevel sourceLevel, ServerLevel targetLevel, BlockPos sourcePos, BlockPos targetPos) {
+        BlockEntity sourceBlockEntity = sourceLevel.getBlockEntity(sourcePos);
+        if (sourceBlockEntity == null) {
+            return;
+        }
+
+        BlockEntity targetBlockEntity = targetLevel.getBlockEntity(targetPos);
+        if (targetBlockEntity == null) {
+            return;
+        }
+
+        CompoundTag tag = sourceBlockEntity.saveWithFullMetadata();
+        tag.putInt("x", targetPos.getX());
+        tag.putInt("y", targetPos.getY());
+        tag.putInt("z", targetPos.getZ());
+        targetBlockEntity.load(tag);
+        targetBlockEntity.setChanged();
     }
 
     private static LivingEntity findLookedAtLivingEntity(ServerPlayer player) {
@@ -401,7 +662,17 @@ public class RiftItem extends Item {
     private record ReturnPoint(ResourceKey<Level> dimension, double x, double y, double z, float yRot, float xRot) {
     }
 
+    private record EntryPoint(double x, double y, double z) {
+    }
+
+    private record TeamMindTarget(UUID owner, ResourceKey<Level> baseDimension) {
+    }
+
     public record AnchorPoint(ResourceKey<Level> dimension, double x, double y, double z) {
+    }
+
+    public record PortalTarget(ResourceKey<Level> baseDimension, ResourceKey<Level> dimension,
+                               UUID owner, Component displayName) {
     }
 
     private static class EtherealMindTeleporter implements ITeleporter {
