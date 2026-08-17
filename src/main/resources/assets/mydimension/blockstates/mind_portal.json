@@ -1,0 +1,8 @@
+{
+  "variants": {
+    "axis=x,core=false": { "model": "mydimension:block/mind_portal" },
+    "axis=x,core=true": { "model": "mydimension:block/mind_portal" },
+    "axis=z,core=false": { "model": "mydimension:block/mind_portal" },
+    "axis=z,core=true": { "model": "mydimension:block/mind_portal" }
+  }
+}

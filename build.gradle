@@ -47,13 +47,126 @@ minecraft {
     }
 }
 
-sourceSets.main.resources { srcDir 'src/generated/resources' }
+def generatedPlayerMindDimensions = layout.buildDirectory.dir('generated/playerMindDimensions')
+
+tasks.register('generatePlayerMindDimensions') {
+    def outputDir = generatedPlayerMindDimensions
+    outputs.dir(outputDir)
+
+    doLast {
+        def dimensionDir = outputDir.get().dir('data/mydimension/dimension').asFile
+        delete(dimensionDir)
+
+        def dimensions = [
+                e: [
+                        type     : 'mydimension:ethereal_mind',
+                        generator: [
+                                type    : 'minecraft:flat',
+                                settings: [
+                                        biome              : 'mydimension:ethereal_mind',
+                                        features           : false,
+                                        lakes              : false,
+                                        layers             : [
+                                                [block: 'minecraft:stone', height: 60],
+                                                [block: 'minecraft:dirt', height: 3],
+                                                [block: 'minecraft:quartz_block', height: 3]
+                                        ],
+                                        structure_overrides: []
+                                ]
+                        ]
+                ],
+                m: [
+                        type     : 'mydimension:mirror_mind',
+                        generator: [
+                                type        : 'mydimension:no_structure_noise',
+                                biome_source: [
+                                        type  : 'minecraft:multi_noise',
+                                        preset: 'minecraft:overworld'
+                                ],
+                                settings    : 'minecraft:overworld'
+                        ]
+                ],
+                w: [
+                        type     : 'mydimension:water_mind',
+                        generator: [
+                                type    : 'minecraft:flat',
+                                settings: [
+                                        biome              : 'mydimension:water_mind',
+                                        features           : false,
+                                        lakes              : false,
+                                        layers             : [
+                                                [block: 'minecraft:stone', height: 20],
+                                                [block: 'minecraft:gravel', height: 5],
+                                                [block: 'minecraft:water', height: 50]
+                                        ],
+                                        structure_overrides: []
+                                ]
+                        ]
+                ],
+                n: [
+                        type     : 'mydimension:nature_mind',
+                        generator: [
+                                type    : 'minecraft:flat',
+                                settings: [
+                                        biome              : 'mydimension:nature_mind',
+                                        features           : true,
+                                        lakes              : false,
+                                        layers             : [
+                                                [block: 'minecraft:stone', height: 50],
+                                                [block: 'minecraft:dirt', height: 9],
+                                                [block: 'minecraft:grass_block', height: 1]
+                                        ],
+                                        structure_overrides: []
+                                ]
+                        ]
+                ],
+                s: [
+                        type     : 'mydimension:soaring_mind',
+                        generator: [
+                                type        : 'mydimension:soaring_islands',
+                                biome_source: [
+                                        type   : 'minecraft:checkerboard',
+                                        biomes : [
+                                                'minecraft:plains',
+                                                'minecraft:forest',
+                                                'minecraft:flower_forest',
+                                                'minecraft:birch_forest',
+                                                'minecraft:meadow',
+                                                'minecraft:cherry_grove',
+                                                'minecraft:snowy_plains',
+                                                'minecraft:grove',
+                                                'minecraft:desert',
+                                                'minecraft:savanna',
+                                                'minecraft:jungle',
+                                                'minecraft:windswept_hills'
+                                        ],
+                                        scale  : 3
+                                ]
+                        ]
+                ]
+        ]
+
+        (0..<2).each { slot ->
+            dimensions.each { code, json ->
+                def file = new File(dimensionDir, "p${slot}${code}.json")
+                file.parentFile.mkdirs()
+                file.text = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(json)) + System.lineSeparator()
+            }
+        }
+    }
+}
+
+sourceSets.main.resources {
+    srcDir 'src/generated/resources'
+    srcDir generatedPlayerMindDimensions
+}
 
 dependencies {
     minecraft "net.minecraftforge:forge:${project.minecraft_version}-${project.forge_version}"
 }
 
 tasks.named('processResources', ProcessResources).configure {
+    dependsOn tasks.named('generatePlayerMindDimensions')
     filteringCharset = 'UTF-8'
 
     var replaceProperties = [
@@ -96,10 +209,39 @@ jar {
     finalizedBy 'reobfJar'
 }
 
+tasks.register('jarNoPrivate', Jar) {
+    archiveClassifier = 'no-private'
+    from sourceSets.main.output
+    exclude 'mydimension_private_minds_enabled.txt'
+    exclude 'data/mydimension/dimension/p*.json'
+    manifest {
+        attributes([
+                'Specification-Title'     : mod_id,
+                'Specification-Vendor'    : mod_authors,
+                'Specification-Version'   : '1',
+                'Implementation-Title'    : "${project.name}-no-private",
+                'Implementation-Version'  : project.version,
+                'Implementation-Vendor'   : mod_authors,
+                'Implementation-Timestamp': new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
+        ])
+    }
+    dependsOn tasks.named('classes')
+    finalizedBy 'reobfJarNoPrivate'
+}
+
+reobf {
+    jarNoPrivate {}
+}
+
+tasks.named('assemble') {
+    dependsOn tasks.named('jarNoPrivate')
+}
+
 publishing {
     publications {
         register('mavenJava', MavenPublication) {
             artifact jar
+            artifact tasks.named('jarNoPrivate')
         }
     }
     repositories {

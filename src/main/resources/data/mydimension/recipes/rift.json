@@ -2,13 +2,19 @@
   "type": "minecraft:crafting_shaped",
   "category": "misc",
   "pattern": [
-    " B ",
-    "B B",
-    " B "
+    "GEG",
+    "ECE",
+    "GEG"
   ],
   "key": {
-    "B": {
-      "item": "minecraft:black_glazed_terracotta"
+    "C": {
+      "item": "minecraft:clock"
+    },
+    "E": {
+      "item": "minecraft:ender_pearl"
+    },
+    "G": {
+      "item": "minecraft:glass"
     }
   },
   "result": {

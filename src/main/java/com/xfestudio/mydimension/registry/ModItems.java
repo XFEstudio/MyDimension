@@ -4,6 +4,7 @@ import com.xfestudio.mydimension.MyDimension;
 import com.xfestudio.mydimension.item.RiftItem;
 import net.minecraft.world.item.CreativeModeTabs;
 import net.minecraft.world.item.Item;
+import net.minecraft.world.item.BlockItem;
 import net.minecraftforge.event.BuildCreativeModeTabContentsEvent;
 import net.minecraftforge.eventbus.api.IEventBus;
 import net.minecraftforge.registries.DeferredRegister;
@@ -14,6 +15,8 @@ public class ModItems {
     public static final DeferredRegister<Item> ITEMS = DeferredRegister.create(ForgeRegistries.ITEMS, MyDimension.MOD_ID);
 
     public static final RegistryObject<Item> RIFT = ITEMS.register("rift", () -> new RiftItem(new Item.Properties().stacksTo(1)));
+    public static final RegistryObject<Item> MIND_PORTAL_FRAME = ITEMS.register("mind_portal_frame",
+            () -> new BlockItem(ModBlocks.MIND_PORTAL_FRAME.get(), new Item.Properties()));
 
     public static void register(IEventBus eventBus) {
         ITEMS.register(eventBus);
@@ -22,6 +25,9 @@ public class ModItems {
     public static void addCreative(BuildCreativeModeTabContentsEvent event) {
         if (event.getTabKey() == CreativeModeTabs.TOOLS_AND_UTILITIES) {
             event.accept(RIFT);
+        }
+        if (event.getTabKey() == CreativeModeTabs.BUILDING_BLOCKS) {
+            event.accept(MIND_PORTAL_FRAME);
         }
     }
 }

@@ -1,0 +1,103 @@
+name: 手动发布
+
+on:
+  workflow_dispatch:
+    inputs:
+      prerelease:
+        description: 标记为预发布版本
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Windows / Java 17
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: 检出代码和标签
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: 配置 Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: microsoft
+          java-version: '17'
+
+      - name: 配置 Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: 读取并校验版本号
+        id: version
+        shell: pwsh
+        run: |
+          $versionLine = Get-Content gradle.properties |
+            Where-Object { $_ -match '^mod_version=' } |
+            Select-Object -First 1
+
+          if (-not $versionLine) {
+            throw 'gradle.properties 中缺少 mod_version'
+          }
+
+          $version = ($versionLine -split '=', 2)[1].Trim()
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            throw 'gradle.properties 中的 mod_version 不能为空'
+          }
+
+          $tag = "v$version"
+          if (git tag --list $tag) {
+            throw "标签 $tag 已存在，请先更新 mod_version"
+          }
+
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
+      - name: 构建发布 JAR
+        shell: pwsh
+        run: .\gradlew.bat --no-daemon "-Dorg.gradle.java.home=$env:JAVA_HOME" clean build
+
+      - name: 创建 GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          IS_PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          $artifacts = @(
+            Get-ChildItem build/libs/*.jar -File |
+              Where-Object { $_.Name -notmatch '-(sources|javadoc)\.jar$' }
+          )
+
+          if ($artifacts.Count -eq 0) {
+            throw 'build/libs 中没有可发布的 JAR'
+          }
+
+          $arguments = @(
+            'release', 'create', $env:RELEASE_TAG
+          )
+          $arguments += $artifacts.FullName
+          $arguments += @(
+            '--repo', $env:GITHUB_REPOSITORY,
+            '--target', $env:GITHUB_SHA,
+            '--title', "MyDimension $env:RELEASE_TAG",
+            '--generate-notes'
+          )
+
+          if ($env:IS_PRERELEASE -eq 'true') {
+            $arguments += '--prerelease'
+          }
+
+          & gh @arguments
+          if ($LASTEXITCODE -ne 0) {
+            throw "创建 GitHub Release 失败，gh 退出码为 $LASTEXITCODE"
+          }
