@@ -3,6 +3,8 @@ package com.xfestudio.mydimension;
 import com.mojang.logging.LogUtils;
 import com.xfestudio.mydimension.network.ModNetwork;
 import com.xfestudio.mydimension.registry.ModChunkGenerators;
+import com.xfestudio.mydimension.registry.ModBlockEntities;
+import com.xfestudio.mydimension.registry.ModBlocks;
 import com.xfestudio.mydimension.registry.ModEntities;
 import com.xfestudio.mydimension.registry.ModItems;
 import net.minecraftforge.common.MinecraftForge;
@@ -20,6 +22,8 @@ public class MyDimension {
     public MyDimension() {
         IEventBus modEventBus = FMLJavaModLoadingContext.get().getModEventBus();
 
+        ModBlocks.register(modEventBus);
+        ModBlockEntities.register(modEventBus);
         ModEntities.register(modEventBus);
         ModItems.register(modEventBus);
         ModChunkGenerators.CHUNK_GENERATORS.register(modEventBus);

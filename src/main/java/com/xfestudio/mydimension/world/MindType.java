@@ -26,4 +26,13 @@ public enum MindType {
     public Component displayName() {
         return Component.translatable(translationKey);
     }
+
+    public static MindType fromBaseDimension(ResourceKey<Level> dimension) {
+        for (MindType type : values()) {
+            if (type.baseDimension.equals(dimension)) {
+                return type;
+            }
+        }
+        return null;
+    }
 }

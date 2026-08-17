@@ -1,5 +1,7 @@
 {
   "item.mydimension.rift": "Rift",
+  "block.mydimension.mind_portal_frame": "Mind Portal Frame",
+  "block.mydimension.mind_portal": "Mind Portal",
   "dimension.mydimension.ethereal_mind": "Ethereal Mind",
   "dimension.mydimension.mirror_mind": "Mirror Mind",
   "dimension.mydimension.water_mind": "Water Mind",
@@ -96,5 +98,14 @@
   "message.mydimension.team.access_revoked": "%s revoked your mind access",
   "message.mydimension.team.not_allowed": "You are not allowed to visit that player's minds",
   "message.mydimension.team.hold_rift": "Hold a Rift before selecting a mind entrance",
-  "message.mydimension.team.selected": "Selected %s's %s"
+  "message.mydimension.team.selected": "Selected %s's %s",
+  "message.mydimension.portal.overworld_only": "The primary mind portal can only be activated in the Overworld",
+  "message.mydimension.portal.invalid_frame": "Incomplete frame: build a 5x6 outer frame with a 3x4 opening",
+  "message.mydimension.portal.invalid_target": "The current Rift action cannot be used as a portal target",
+  "message.mydimension.portal.owner_only": "Only this portal's creator can change its target",
+  "message.mydimension.portal.no_space": "No safe space was found for the paired portal",
+  "message.mydimension.portal.activated": "Mind portal linked to %s",
+  "message.mydimension.portal.updated": "Mind portal target changed to %s",
+  "message.mydimension.portal.access_denied": "You are not allowed to enter this portal's target mind",
+  "message.mydimension.portal.team_target": "%s's %s"
 }

@@ -3,8 +3,10 @@ package com.xfestudio.mydimension.item;
 import com.xfestudio.mydimension.client.RiftClient;
 import com.xfestudio.mydimension.world.MindInstances;
 import com.xfestudio.mydimension.world.MindTeamAccess;
+import com.xfestudio.mydimension.world.MindType;
 import com.xfestudio.mydimension.world.ModDimensions;
 import com.xfestudio.mydimension.world.PrivateMindFeature;
+import com.xfestudio.mydimension.world.portal.MindPortalManager;
 import com.xfestudio.mydimension.world.SoaringMindChunkGenerator;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
@@ -25,8 +27,10 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.projectile.ProjectileUtil;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.context.UseOnContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.portal.PortalInfo;
 import net.minecraft.world.phys.AABB;
@@ -122,11 +126,70 @@ public class RiftItem extends Item {
         }
     }
 
+    @Override
+    public InteractionResult useOn(UseOnContext context) {
+        BlockState state = context.getLevel().getBlockState(context.getClickedPos());
+        if (state.is(com.xfestudio.mydimension.registry.ModBlocks.MIND_PORTAL_FRAME.get())
+                || state.is(com.xfestudio.mydimension.registry.ModBlocks.MIND_PORTAL.get())) {
+            if (context.getLevel().isClientSide()) {
+                return InteractionResult.SUCCESS;
+            }
+            return MindPortalManager.useRiftOnPortal(context);
+        }
+        return super.useOn(context);
+    }
+
     public static void setTeamMindTarget(ItemStack stack, UUID owner, ResourceKey<Level> baseDimension) {
         CompoundTag tag = stack.getOrCreateTag();
         tag.putString(SELECTED_ACTION_TAG, RiftAction.VISIT_TEAM_MIND.id());
         tag.putUUID(TEAM_OWNER_TAG, owner);
         tag.putString(TEAM_DIMENSION_TAG, baseDimension.location().toString());
+    }
+
+    public static PortalTarget resolvePortalTarget(ServerPlayer player, ItemStack stack) {
+        RiftAction action = getSelectedAction(stack);
+        ResourceKey<Level> baseDimension;
+        ResourceKey<Level> actualDimension;
+        UUID targetOwner = null;
+        Component displayName;
+
+        if (action == RiftAction.VISIT_TEAM_MIND) {
+            TeamMindTarget teamTarget = readTeamMindTarget(stack);
+            if (teamTarget == null || !MindTeamAccess.hasAccess(player.getServer(), teamTarget.owner(), player.getUUID())) {
+                player.displayClientMessage(Component.translatable("message.mydimension.team.not_allowed"), true);
+                return null;
+            }
+            baseDimension = teamTarget.baseDimension();
+            actualDimension = MindInstances.dimensionForOwner(player.getServer(), teamTarget.owner(), baseDimension);
+            targetOwner = teamTarget.owner();
+            String ownerName = MindTeamAccess.entrancesFor(player).stream()
+                    .filter(entry -> entry.id().equals(teamTarget.owner()))
+                    .map(MindTeamAccess.PlayerEntry::name)
+                    .findFirst()
+                    .orElse("?");
+            MindType type = MindType.fromBaseDimension(baseDimension);
+            displayName = Component.translatable("message.mydimension.portal.team_target", ownerName,
+                    type == null ? Component.literal(baseDimension.location().toString()) : type.displayName());
+        } else if (action.teleportsPlayer()) {
+            baseDimension = action.targetDimension();
+            if (action.usesSharedDimension()) {
+                actualDimension = baseDimension;
+            } else {
+                targetOwner = player.getUUID();
+                actualDimension = MindInstances.dimensionForOwner(player.getServer(), player.getUUID(), baseDimension);
+            }
+            MindType type = MindType.fromBaseDimension(baseDimension);
+            displayName = type == null ? Component.literal(baseDimension.location().toString()) : type.displayName();
+        } else {
+            player.displayClientMessage(Component.translatable("message.mydimension.portal.invalid_target"), true);
+            return null;
+        }
+
+        if (actualDimension == null) {
+            player.displayClientMessage(Component.translatable("message.mydimension.team.no_slot"), true);
+            return null;
+        }
+        return new PortalTarget(baseDimension, actualDimension, targetOwner, displayName);
     }
 
     public static RiftAction getSelectedAction(ItemStack stack) {
@@ -606,6 +669,10 @@ public class RiftItem extends Item {
     }
 
     public record AnchorPoint(ResourceKey<Level> dimension, double x, double y, double z) {
+    }
+
+    public record PortalTarget(ResourceKey<Level> baseDimension, ResourceKey<Level> dimension,
+                               UUID owner, Component displayName) {
     }
 
     private static class EtherealMindTeleporter implements ITeleporter {

@@ -1,5 +1,7 @@
 {
   "item.mydimension.rift": "裂罅",
+  "block.mydimension.mind_portal_frame": "心境门框",
+  "block.mydimension.mind_portal": "心境传送门",
   "dimension.mydimension.ethereal_mind": "空灵心境",
   "dimension.mydimension.mirror_mind": "镜之心境",
   "dimension.mydimension.water_mind": "水之心境",
@@ -97,5 +99,14 @@
   "message.mydimension.team.not_allowed": "你没有访问该玩家心境的权限",
   "message.mydimension.team.hold_rift": "请手持裂罅后再选择心境入口",
   "message.mydimension.team.selected": "已选择 %s 的%s",
+  "message.mydimension.portal.overworld_only": "心境传送门的主入口只能在主世界激活",
+  "message.mydimension.portal.invalid_frame": "门框不完整：需要使用心境门框搭建5×6外框（内部3×4）",
+  "message.mydimension.portal.invalid_target": "裂罅当前操作不能作为传送门目标，请先选择一个可前往的心境",
+  "message.mydimension.portal.owner_only": "只有这座传送门的创建者可以修改目标",
+  "message.mydimension.portal.no_space": "目标心境附近没有足够空间生成配对传送门",
+  "message.mydimension.portal.activated": "心境传送门已连接至%s",
+  "message.mydimension.portal.updated": "心境传送门目标已修改为%s",
+  "message.mydimension.portal.access_denied": "你没有进入这座传送门目标心境的权限",
+  "message.mydimension.portal.team_target": "%s的%s",
   "itemGroup.mydimension": "我的维度"
 }
