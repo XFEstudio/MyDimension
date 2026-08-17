@@ -38,3 +38,4 @@ hs_err_*.log
 replay_*.log
 *.hprof
 *.jfr
+/.vs/mydimension-template-1.20.1.slnx/FileContentIndex
