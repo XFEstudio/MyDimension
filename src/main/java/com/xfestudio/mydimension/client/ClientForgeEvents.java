@@ -20,6 +20,7 @@ public class ClientForgeEvents {
         }
 
         Minecraft minecraft = Minecraft.getInstance();
+        MindPortalOverlay.tick(minecraft);
         if (minecraft.level == null) {
             return;
         }

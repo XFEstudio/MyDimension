@@ -1,6 +1,7 @@
 package com.xfestudio.mydimension.world.portal;
 
 import com.xfestudio.mydimension.MyDimension;
+import com.xfestudio.mydimension.compat.create.CreateTrainCompat;
 import com.xfestudio.mydimension.item.RiftItem;
 import com.xfestudio.mydimension.registry.ModBlocks;
 import com.xfestudio.mydimension.world.MindTeamAccess;
@@ -31,6 +32,7 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.saveddata.SavedData;
 import net.minecraft.world.phys.Vec3;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -197,6 +199,79 @@ public final class MindPortalManager {
                 SoundSource.PLAYERS, 0.8F, 1.0F);
     }
 
+    /**
+     * Resolves the outbound track face for integrations which can move an entire vehicle through a portal.
+     * The returned face points from the outbound track back towards its portal block.
+     */
+    @Nullable
+    public static TrainPortalExit findTrainExit(ServerLevel level, BlockPos portalPos, Direction inboundDirection) {
+        if (inboundDirection.getAxis() == Direction.Axis.Y) {
+            return null;
+        }
+
+        BlockState portalState = level.getBlockState(portalPos);
+        if (!portalState.is(ModBlocks.MIND_PORTAL.get())) {
+            return null;
+        }
+
+        Direction.Axis sourceAxis = portalState.getValue(MindPortalBlock.AXIS);
+        if (inboundDirection.getAxis() == sourceAxis) {
+            return null;
+        }
+
+        MindPortalBlockEntity sourceCore = findCoreEntity(level, portalPos, sourceAxis);
+        if (sourceCore == null || sourceCore.linkId() == null) {
+            return null;
+        }
+
+        PortalLink link = data(level.getServer()).links.get(sourceCore.linkId());
+        if (link == null) {
+            return null;
+        }
+
+        PortalEndpoint current = sourceCore.sourceSide() ? link.source() : link.destination();
+        if (!current.dimension().equals(level.dimension())
+                || !current.core().equals(sourceCore.getBlockPos())
+                || current.axis() != sourceAxis) {
+            return null;
+        }
+
+        int horizontal = sourceAxis == Direction.Axis.X
+                ? portalPos.getX() - current.core().getX()
+                : portalPos.getZ() - current.core().getZ();
+        int vertical = portalPos.getY() - current.core().getY();
+        if (horizontal < 0 || horizontal >= INNER_WIDTH || vertical < 0 || vertical >= INNER_HEIGHT) {
+            return null;
+        }
+
+        PortalEndpoint destination = sourceCore.sourceSide() ? link.destination() : link.source();
+        ServerLevel destinationLevel = level.getServer().getLevel(destination.dimension());
+        if (destinationLevel == null) {
+            return null;
+        }
+
+        BlockPos destinationPortalPos = offset(destination.core(), destination.axis(), horizontal, vertical);
+        BlockState destinationState = destinationLevel.getBlockState(destinationPortalPos);
+        if (!destinationState.is(ModBlocks.MIND_PORTAL.get())
+                || destinationState.getValue(MindPortalBlock.AXIS) != destination.axis()) {
+            return null;
+        }
+
+        MindPortalBlockEntity destinationCore = findCoreEntity(
+                destinationLevel, destinationPortalPos, destination.axis());
+        if (destinationCore == null || !sourceCore.linkId().equals(destinationCore.linkId())) {
+            return null;
+        }
+
+        Direction outboundDirection = inboundDirection;
+        if (outboundDirection.getAxis() == destination.axis()) {
+            outboundDirection = outboundDirection.getClockWise();
+        }
+
+        BlockPos outboundTrackPos = destinationPortalPos.relative(outboundDirection);
+        return new TrainPortalExit(destinationLevel, outboundTrackPos, outboundDirection.getOpposite());
+    }
+
     private static PortalFrame findFrame(ServerLevel level, BlockPos clickedPos) {
         for (Direction.Axis axis : new Direction.Axis[] {Direction.Axis.X, Direction.Axis.Z}) {
             for (int horizontal = -1; horizontal <= INNER_WIDTH; horizontal++) {
@@ -330,6 +405,7 @@ public final class MindPortalManager {
                 }
             }
         }
+        CreateTrainCompat.onPortalActivated(level, endpoint);
     }
 
     private static void destroyLink(MinecraftServer server, UUID linkId) {
@@ -423,6 +499,9 @@ public final class MindPortalManager {
     }
 
     public record PortalEndpoint(ResourceKey<Level> dimension, BlockPos core, Direction.Axis axis) {
+    }
+
+    public record TrainPortalExit(ServerLevel level, BlockPos trackPos, Direction trackFace) {
     }
 
     private record PortalLink(UUID id, UUID owner, PortalEndpoint source, PortalEndpoint destination,

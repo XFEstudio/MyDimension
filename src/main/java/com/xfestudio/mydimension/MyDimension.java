@@ -1,6 +1,7 @@
 package com.xfestudio.mydimension;
 
 import com.mojang.logging.LogUtils;
+import com.xfestudio.mydimension.compat.create.CreateTrainCompat;
 import com.xfestudio.mydimension.network.ModNetwork;
 import com.xfestudio.mydimension.registry.ModChunkGenerators;
 import com.xfestudio.mydimension.registry.ModBlockEntities;
@@ -33,6 +34,9 @@ public class MyDimension {
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {
-        event.enqueueWork(ModNetwork::register);
+        event.enqueueWork(() -> {
+            ModNetwork.register();
+            CreateTrainCompat.register();
+        });
     }
 }
