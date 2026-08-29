@@ -1,20 +1,17 @@
 package com.xfestudio.mydimension.client;
 
-import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.xfestudio.mydimension.registry.ModBlocks;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.client.renderer.texture.TextureAtlas;
-import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.core.BlockPos;
-import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.AABB;
 import net.minecraftforge.client.gui.overlay.IGuiOverlay;
+import org.joml.Matrix4f;
 
 public final class MindPortalOverlay {
-    private static final ResourceLocation PORTAL_SPRITE = new ResourceLocation("minecraft", "block/nether_portal");
     private static final float CHARGE_STEP = 1.0F / 40.0F;
     private static final float FADE_STEP = 0.1F;
 
@@ -84,15 +81,25 @@ public final class MindPortalOverlay {
         }
         alpha = Mth.clamp(alpha * pulse, 0.0F, 1.0F);
 
-        TextureAtlasSprite sprite = minecraft.getTextureAtlas(TextureAtlas.LOCATION_BLOCKS).apply(PORTAL_SPRITE);
-        RenderSystem.disableDepthTest();
-        RenderSystem.depthMask(false);
-        RenderSystem.enableBlend();
-        RenderSystem.defaultBlendFunc();
-        graphics.setColor(0.76F, 0.9F, 1.0F, alpha);
-        graphics.blit(0, 0, -90, screenWidth, screenHeight, sprite);
-        graphics.setColor(1.0F, 1.0F, 1.0F, 1.0F);
-        RenderSystem.depthMask(true);
-        RenderSystem.enableDepthTest();
+        drawDynamicOverlay(graphics, screenWidth, screenHeight, alpha * 0.88F);
+    }
+
+    private static void drawDynamicOverlay(GuiGraphics graphics, int screenWidth, int screenHeight, float alpha) {
+        graphics.flush();
+        if (!MindPortalRenderType.setOverlayState(alpha)) {
+            return;
+        }
+
+        try {
+            Matrix4f matrix = graphics.pose().last().pose();
+            VertexConsumer consumer = graphics.bufferSource().getBuffer(MindPortalRenderType.overlay());
+            consumer.vertex(matrix, 0.0F, 0.0F, 0.0F).endVertex();
+            consumer.vertex(matrix, 0.0F, screenHeight, 0.0F).endVertex();
+            consumer.vertex(matrix, screenWidth, screenHeight, 0.0F).endVertex();
+            consumer.vertex(matrix, screenWidth, 0.0F, 0.0F).endVertex();
+            graphics.flush();
+        } finally {
+            MindPortalRenderType.resetOverlayAlpha();
+        }
     }
 }
