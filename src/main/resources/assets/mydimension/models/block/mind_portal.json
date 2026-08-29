@@ -1,7 +1,7 @@
 {
   "parent": "minecraft:block/block",
   "textures": {
-    "particle": "minecraft:block/nether_portal"
+    "particle": "mydimension:block/mind_portal"
   },
   "elements": []
 }

@@ -4,7 +4,7 @@ import com.xfestudio.mydimension.world.block.entity.MindPortalBlockEntity;
 import com.xfestudio.mydimension.world.portal.MindPortalManager;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
-import net.minecraft.core.particles.ParticleTypes;
+import net.minecraft.core.particles.DustColorTransitionOptions;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
@@ -13,6 +13,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.BaseEntityBlock;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
@@ -21,13 +22,17 @@ import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.block.state.properties.BooleanProperty;
 import net.minecraft.world.level.block.state.properties.EnumProperty;
 import net.minecraft.world.phys.shapes.CollisionContext;
-import net.minecraft.world.phys.shapes.Shapes;
 import net.minecraft.world.phys.shapes.VoxelShape;
 import org.jetbrains.annotations.Nullable;
+import org.joml.Vector3f;
 
 public class MindPortalBlock extends BaseEntityBlock {
     public static final EnumProperty<Direction.Axis> AXIS = BlockStateProperties.HORIZONTAL_AXIS;
     public static final BooleanProperty CORE = BooleanProperty.create("core");
+    private static final VoxelShape X_SHAPE = Block.box(0.0D, 0.0D, 6.0D, 16.0D, 16.0D, 10.0D);
+    private static final VoxelShape Z_SHAPE = Block.box(6.0D, 0.0D, 0.0D, 10.0D, 16.0D, 16.0D);
+    private static final DustColorTransitionOptions MIND_DUST = new DustColorTransitionOptions(
+            new Vector3f(0.08F, 0.82F, 1.0F), new Vector3f(0.76F, 0.18F, 1.0F), 0.85F);
 
     public MindPortalBlock(Properties properties) {
         super(properties);
@@ -46,7 +51,7 @@ public class MindPortalBlock extends BaseEntityBlock {
 
     @Override
     public VoxelShape getShape(BlockState state, BlockGetter level, BlockPos pos, CollisionContext context) {
-        return Shapes.empty();
+        return state.getValue(AXIS) == Direction.Axis.X ? X_SHAPE : Z_SHAPE;
     }
 
     @Override
@@ -58,22 +63,24 @@ public class MindPortalBlock extends BaseEntityBlock {
 
     @Override
     public void animateTick(BlockState state, Level level, BlockPos pos, RandomSource random) {
-        if (random.nextInt(36) == 0) {
+        if (state.getValue(CORE) && random.nextInt(36) == 0) {
             level.playLocalSound(pos.getX() + 0.5D, pos.getY() + 0.5D, pos.getZ() + 0.5D,
                     SoundEvents.PORTAL_AMBIENT, SoundSource.BLOCKS, 0.35F, 0.8F + random.nextFloat() * 0.4F, false);
         }
 
-        for (int i = 0; i < 2; i++) {
-            double x = pos.getX() + random.nextDouble();
-            double y = pos.getY() + random.nextDouble();
-            double z = pos.getZ() + random.nextDouble();
-            double normalSpeed = (random.nextDouble() - 0.5D) * 0.12D;
-            double verticalSpeed = (random.nextDouble() - 0.5D) * 0.04D;
-            if (state.getValue(AXIS) == Direction.Axis.X) {
-                level.addParticle(ParticleTypes.REVERSE_PORTAL, x, y, z, 0.0D, verticalSpeed, normalSpeed);
-            } else {
-                level.addParticle(ParticleTypes.REVERSE_PORTAL, x, y, z, normalSpeed, verticalSpeed, 0.0D);
-            }
+        if (random.nextInt(3) != 0) {
+            return;
+        }
+
+        double x = pos.getX() + random.nextDouble();
+        double y = pos.getY() + random.nextDouble();
+        double z = pos.getZ() + random.nextDouble();
+        double normalSpeed = (random.nextDouble() - 0.5D) * 0.055D;
+        double verticalSpeed = (random.nextDouble() - 0.5D) * 0.02D;
+        if (state.getValue(AXIS) == Direction.Axis.X) {
+            level.addParticle(MIND_DUST, x, y, z, 0.0D, verticalSpeed, normalSpeed);
+        } else {
+            level.addParticle(MIND_DUST, x, y, z, normalSpeed, verticalSpeed, 0.0D);
         }
     }
 
