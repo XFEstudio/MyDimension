@@ -33,6 +33,20 @@ public final class BlueprintAltActionController {
         public String translationKey() {
             return "action.mydimension.realmwright.blueprint." + name().toLowerCase(java.util.Locale.ROOT);
         }
+
+        public String glyph() {
+            return switch (this) {
+                case FLIP_X -> "FX";
+                case FLIP_Y -> "FY";
+                case FLIP_Z -> "FZ";
+                case ROTATE_Y -> "RY";
+                case OFFSET_X -> "+X";
+                case OFFSET_Y -> "+Y";
+                case OFFSET_Z -> "+Z";
+                case RESET -> "R";
+                case SAVE -> "S";
+            };
+        }
     }
 
     public enum Phase {
@@ -55,6 +69,10 @@ public final class BlueprintAltActionController {
         return ACTIONS.get(highlighted);
     }
 
+    public int highlightedIndex() {
+        return highlighted;
+    }
+
     public Action adjusting() {
         return adjusting;
     }
@@ -66,6 +84,17 @@ public final class BlueprintAltActionController {
     public void openNavigation() {
         if (phase == Phase.CLOSED) {
             phase = Phase.NAVIGATION;
+        }
+    }
+
+    /** Mirrors the physical Alt state so the wheel opens on key-down, before any scroll event arrives. */
+    public void updateVisibility(boolean altDown, boolean available) {
+        if (!available) {
+            reset();
+        } else if (altDown) {
+            openNavigation();
+        } else if (phase != Phase.CLOSED) {
+            closeOnAltRelease();
         }
     }
 

@@ -91,6 +91,10 @@ public final class BuilderCommandPacket {
         return new BuilderCommandPacket(Action.CANCEL, null, null, 0, 0, activeJobId, null, null);
     }
 
+    public static BuilderCommandPacket cancelBlueprint() {
+        return simple(Action.CANCEL_BLUEPRINT);
+    }
+
     public static BuilderCommandPacket undo() {
         return simple(Action.UNDO);
     }
@@ -155,7 +159,7 @@ public final class BuilderCommandPacket {
     public static BuilderCommandPacket decode(FriendlyByteBuf buffer) {
         Action action = buffer.readEnum(Action.class);
         return switch (action) {
-            case REQUEST_SNAPSHOT, OPEN_MENU, UNDO, REDO -> simple(action);
+            case REQUEST_SNAPSHOT, OPEN_MENU, UNDO, REDO, CANCEL_BLUEPRINT -> simple(action);
             case SET_MODE -> setMode(buffer.readEnum(BuilderMode.class));
             case SET_MATCH -> setMatch(buffer.readEnum(SurfaceMatchMode.class));
             case SET_LIMITS -> setLimits(buffer.readVarInt(), buffer.readVarInt());
@@ -199,10 +203,14 @@ public final class BuilderCommandPacket {
 
         if (packet.action.worldMutation) {
             if (player.getCooldowns().isOnCooldown(scepter.getItem())) {
-                BuilderNetworkBridge.sync(player);
                 return;
             }
             player.getCooldowns().addCooldown(scepter.getItem(), 1);
+        }
+
+        if (packet.action == Action.USE) {
+            if (useTarget(player, scepter, packet.target)) BuilderNetworkBridge.sync(player);
+            return;
         }
 
         switch (packet.action) {
@@ -214,9 +222,10 @@ public final class BuilderCommandPacket {
                 RealmwrightData.setDemolishLimit(scepter, packet.second,
                         BuilderRuntime.settings().maxDemolishLimit());
             }
-            case USE -> useTarget(player, scepter, packet.target);
+            case USE -> { }
             case RESUME -> resume(player, scepter, packet.id);
             case CANCEL -> cancel(player, scepter, packet.id);
+            case CANCEL_BLUEPRINT -> cancelBlueprint(player, scepter);
             case UNDO -> BuilderHistoryService.undo(player, scepter);
             case REDO -> BuilderHistoryService.redo(player, scepter);
             case UNBIND_ANCHOR -> AnchorBindings.unbind(scepter, packet.id);
@@ -229,15 +238,15 @@ public final class BuilderCommandPacket {
         BuilderNetworkBridge.sync(player);
     }
 
-    private static void useTarget(ServerPlayer player, ItemStack scepter, @Nullable Target requested) {
+    private static boolean useTarget(ServerPlayer player, ItemStack scepter, @Nullable Target requested) {
         if (!BuilderRuntime.settings().enabled()) {
             player.displayClientMessage(Component.translatable("message.mydimension.builder.disabled"), true);
-            return;
+            return false;
         }
         BlockHitResult hit = authoritativeHit(player, requested);
         if (hit == null) {
             player.displayClientMessage(Component.translatable("message.mydimension.builder.out_of_reach"), true);
-            return;
+            return false;
         }
 
         BlockEntity blockEntity = player.serverLevel().getBlockEntity(hit.getBlockPos());
@@ -245,7 +254,7 @@ public final class BuilderCommandPacket {
             if (!anchor.mayUse(player)) {
                 player.displayClientMessage(Component.translatable(
                         "message.mydimension.builder.anchor_forbidden"), true);
-                return;
+                return false;
             }
             AnchorBindings.BindResult result = AnchorBindings.bind(scepter, anchor.anchorId(),
                     BuilderConfig.MAX_BOUND_ANCHORS.get());
@@ -255,13 +264,14 @@ public final class BuilderCommandPacket {
                 case LIMIT_REACHED -> "message.mydimension.builder.anchor_limit_reached";
             };
             player.displayClientMessage(Component.translatable(key), true);
-            return;
+            return result == AnchorBindings.BindResult.BOUND;
         }
 
         BuilderOperationManager.Result result = BuilderOperationManager.executeSurface(player, scepter, hit);
         if (!result.accepted() && result.rejectionKey() != null) {
             player.displayClientMessage(Component.translatable(result.rejectionKey()), true);
         }
+        return result.shouldSynchronize();
     }
 
     @Nullable
@@ -303,6 +313,12 @@ public final class BuilderCommandPacket {
         if (matchingPending(player, scepter, requestedJob) != null) {
             BuilderOperationManager.cancelPending(player, scepter);
         }
+    }
+
+    private static void cancelBlueprint(ServerPlayer player, ItemStack scepter) {
+        BlueprintServerService.get(player.getServer()).cancelQueuedPlacement(player);
+        com.xfestudio.mydimension.builder.blueprint.BlueprintTaskManager.get(player.getServer())
+                .cancel(player, scepter);
     }
 
     @Nullable
@@ -371,7 +387,8 @@ public final class BuilderCommandPacket {
         UNBIND_ANCHOR(false),
         MOVE_ANCHOR(false),
         SET_ANCHOR_PUBLIC(false),
-        SET_ANCHOR_PLAYER(false);
+        SET_ANCHOR_PLAYER(false),
+        CANCEL_BLUEPRINT(false);
 
         private final boolean worldMutation;
 

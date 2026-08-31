@@ -56,10 +56,18 @@ public final class BuilderOperationManager {
                 .hasActive(player.getUUID())) {
             return Result.rejected("message.mydimension.builder.active_task_exists");
         }
+        BuilderMode mode = RealmwrightData.mode(scepter);
+        UUID scepterId = RealmwrightData.id(scepter);
+        long now = player.getServer().overworld().getGameTime();
+        // Repeated click packets are rejected before ray checks, BFS planning, inventory scans,
+        // history sizing and world snapshots.  The first request has no delay.
+        if (BuilderSurfaceRateLimiter.isCoolingDown(player.getServer(), player.getUUID(), scepterId,
+                mode, now)) {
+            return Result.throttled();
+        }
         ServerLevel level = player.serverLevel();
         if (!validReachAndSight(player, hit)) return Result.rejected("message.mydimension.builder.out_of_reach");
 
-        BuilderMode mode = RealmwrightData.mode(scepter);
         int requested = mode == BuilderMode.BUILD
                 ? RealmwrightData.buildLimit(scepter, BuilderRuntime.settings().maxBuildLimit())
                 : RealmwrightData.demolishLimit(scepter, BuilderRuntime.settings().maxDemolishLimit());
@@ -72,6 +80,10 @@ public final class BuilderOperationManager {
         SurfacePlanner.Plan plan = SurfacePlanner.plan(level, hit.getBlockPos(), hit.getDirection(), mode,
                 RealmwrightData.matchMode(scepter), limit, override);
         if (plan.candidates().isEmpty()) return Result.rejected("message.mydimension.builder.nothing_to_do");
+        if (!BuilderSurfaceRateLimiter.tryAcquire(player.getServer(), player.getUUID(), scepterId, mode, now,
+                plan.candidates().size(), BuilderRuntime.settings().editsPerTick())) {
+            return Result.throttled();
+        }
 
         UUID transactionId = UUID.randomUUID();
         BuilderTransaction.Type transactionType = mode == BuilderMode.BUILD
@@ -85,7 +97,7 @@ public final class BuilderOperationManager {
                 : demolish(player, scepter, plan.candidates(), transactionId);
         finish(player, scepter, transactionType, transactionId, execution);
         return new Result(execution.changed.size(), execution.missing.size(), execution.blocked,
-                plan.truncated(), null);
+                plan.truncated(), null, true);
     }
 
     public static Result resumePending(ServerPlayer player, ItemStack scepter) {
@@ -99,7 +111,7 @@ public final class BuilderOperationManager {
         }
         if (task.type() == BuilderTransaction.Type.BLUEPRINT) {
             com.xfestudio.mydimension.builder.blueprint.BlueprintTaskManager.resume(player, scepter, task);
-            return new Result(0, task.missing().size(), 0, false, null);
+            return new Result(0, task.missing().size(), 0, false, null, true);
         }
         List<SurfacePlanner.Candidate> candidates = task.missing().stream()
                 .map(entry -> new SurfacePlanner.Candidate(entry.pos(), entry.pos(), entry.state(), 0)).toList();
@@ -114,7 +126,7 @@ public final class BuilderOperationManager {
         Execution execution = build(player, scepter, candidates, Direction.UP, task.transactionId(), false,
                 blockEntities);
         finish(player, scepter, task.type(), task.transactionId(), execution);
-        return new Result(execution.changed.size(), execution.missing.size(), execution.blocked, false, null);
+        return new Result(execution.changed.size(), execution.missing.size(), execution.blocked, false, null, true);
     }
 
     public static boolean cancelPending(ServerPlayer player, ItemStack scepter) {
@@ -134,6 +146,7 @@ public final class BuilderOperationManager {
         ServerLevel level = player.serverLevel();
         Execution result = new Execution(player.getOffhandItem().copy());
         List<BuildAttempt> attempts = new ArrayList<>();
+        boolean free = isFree(player);
         for (SurfacePlanner.Candidate candidate : candidates) {
             try {
                 BlockPos pos = candidate.target();
@@ -141,7 +154,7 @@ public final class BuilderOperationManager {
                         : candidate.desiredState();
                 BlockState existing = level.getBlockState(pos);
                 if (existing.equals(desired)) continue;
-                if (!validBuildTarget(player, pos, desired, existing)) {
+                if (!validBuildEnvelope(player, pos, desired, existing)) {
                     result.blocked++;
                     continue;
                 }
@@ -161,7 +174,7 @@ public final class BuilderOperationManager {
         // Aggregate each ItemKey before touching remote handlers. This is what prevents a large storage
         // network from being scanned once per target block.
         List<SupplyPool> pools = new ArrayList<>();
-        if (!isFree(player)) {
+        if (!free) {
             for (BuildAttempt attempt : attempts) {
                 SupplyPool pool = findPool(pools, attempt.cost);
                 if (pool == null) {
@@ -183,77 +196,9 @@ public final class BuilderOperationManager {
             }
         }
 
-        for (BuildAttempt attempt : attempts) {
-            BlockPos pos = attempt.candidate.target();
-            BlockState desired = attempt.desired;
-            SupplyPool pool = isFree(player) ? null : findPool(pools, attempt.cost);
-            int costCount = attempt.cost.getCount();
-            if (pool != null && pool.available < costCount) {
-                result.missing.add(new PendingBuildData.Entry(pos, desired, attempt.blockEntityTag));
-                continue;
-            }
-
-            WorldDelta.Snapshot before;
-            BlockSnapshot forgeSnapshot;
-            try {
-                before = WorldDelta.snapshot(level, pos);
-                forgeSnapshot = BlockSnapshot.create(level.dimension(), level, pos);
-            } catch (Throwable throwable) {
-                result.blocked++;
-                MyDimension.LOGGER.warn("Builder could not snapshot placement target {} in {}", pos,
-                        level.dimension().location(), throwable);
-                continue;
-            }
-            boolean placed = false;
-            try {
-                placed = level.setBlock(pos, desired, Block.UPDATE_ALL);
-                if (placed) {
-                    BlockEvent.EntityPlaceEvent event = new BlockEvent.EntityPlaceEvent(forgeSnapshot,
-                            before.state(), player);
-                    if (MinecraftForge.EVENT_BUS.post(event)) {
-                        forgeSnapshot.restore(true, false);
-                        placed = false;
-                    }
-                }
-                if (placed && attempt.blockEntityTag != null
-                        && !applyBlockEntityTag(player, pos, attempt.blockEntityTag)) {
-                    forgeSnapshot.restore(true, false);
-                    placed = false;
-                }
-                // A placement callback may synchronously replace or consume the block (for example a
-                // powered TNT). Such side effects are not represented by this transaction, so never debit
-                // material or record an air-to-air delta as a successful placement.
-                if (placed && !level.getBlockState(pos).equals(desired)) {
-                    forgeSnapshot.restore(true, false);
-                    placed = false;
-                }
-            } catch (Throwable throwable) {
-                try { forgeSnapshot.restore(true, false); } catch (Throwable ignored) { }
-                MyDimension.LOGGER.warn("Builder placement failed safely at {} in {}", pos,
-                        level.dimension().location(), throwable);
-                placed = false;
-            }
-            if (!placed) {
-                result.blocked++;
-                continue;
-            }
-            WorldDelta.Snapshot after;
-            try {
-                after = WorldDelta.snapshot(level, pos);
-            } catch (Throwable throwable) {
-                try { forgeSnapshot.restore(true, false); } catch (Throwable ignored) { }
-                result.blocked++;
-                MyDimension.LOGGER.warn("Builder rolled back placement at {} because its after-image failed",
-                        pos, throwable);
-                continue;
-            }
-            if (pool != null) {
-                pool.available -= costCount;
-                addLedgerStack(result.debits, pool.template.copyWithCount(costCount));
-            }
-            result.changed.add(new WorldDelta(pos, before.state(), before.blockEntity(),
-                    after.state(), after.blockEntity()));
-        }
+        List<BuildAttempt> unresolved = processWithSingleRetry(attempts,
+                attempt -> placeBuildAttempt(player, pools, free, result, attempt));
+        result.blocked += unresolved.size();
         for (SupplyPool pool : pools) {
             if (pool.available > 0) {
                 dropOverflow(player, transactionId, BuilderMaterials.insert(player, scepter,
@@ -262,6 +207,120 @@ public final class BuilderOperationManager {
         }
         result.offhandAfter = player.getOffhandItem().copy();
         return result;
+    }
+
+    /**
+     * Makes one placement attempt against the latest world. Returning false is
+     * reserved exclusively for a currently-unsatisfied canSurvive dependency,
+     * allowing the caller to retry it after later supports in the same batch.
+     * Every other result is terminal for this batch and records its own ledger
+     * or blocked/missing outcome exactly once.
+     */
+    private static boolean placeBuildAttempt(ServerPlayer player, List<SupplyPool> pools, boolean free,
+                                             Execution result, BuildAttempt attempt) {
+        ServerLevel level = player.serverLevel();
+        BlockPos pos = attempt.candidate.target();
+        BlockState desired = attempt.desired;
+        SupplyPool pool = free ? null : findPool(pools, attempt.cost);
+        int costCount = attempt.cost.getCount();
+        try {
+            BlockState existing = level.getBlockState(pos);
+            if (existing.equals(desired)) return true;
+            if (!validBuildEnvelope(player, pos, desired, existing)) {
+                result.blocked++;
+                return true;
+            }
+            if (!desired.canSurvive(level, pos)) return false;
+        } catch (Throwable throwable) {
+            result.blocked++;
+            MyDimension.LOGGER.warn("Builder rejected placement target {} after a dynamic check failed", pos,
+                    throwable);
+            return true;
+        }
+        if (!free && pool == null) {
+            result.blocked++;
+            return true;
+        }
+        if (pool != null && pool.available < costCount) {
+            result.missing.add(new PendingBuildData.Entry(pos, desired, attempt.blockEntityTag));
+            return true;
+        }
+
+        WorldDelta.Snapshot before;
+        BlockSnapshot forgeSnapshot;
+        try {
+            before = WorldDelta.snapshot(level, pos);
+            forgeSnapshot = BlockSnapshot.create(level.dimension(), level, pos);
+        } catch (Throwable throwable) {
+            result.blocked++;
+            MyDimension.LOGGER.warn("Builder could not snapshot placement target {} in {}", pos,
+                    level.dimension().location(), throwable);
+            return true;
+        }
+        boolean placed = false;
+        try {
+            placed = level.setBlock(pos, desired, Block.UPDATE_ALL);
+            if (placed) {
+                BlockEvent.EntityPlaceEvent event = new BlockEvent.EntityPlaceEvent(forgeSnapshot,
+                        before.state(), player);
+                if (MinecraftForge.EVENT_BUS.post(event)) {
+                    forgeSnapshot.restore(true, false);
+                    placed = false;
+                }
+            }
+            if (placed && attempt.blockEntityTag != null
+                    && !applyBlockEntityTag(player, pos, attempt.blockEntityTag)) {
+                forgeSnapshot.restore(true, false);
+                placed = false;
+            }
+            // A placement callback may synchronously replace or consume the block (for example a
+            // powered TNT). Such side effects are not represented by this transaction, so never debit
+            // material or record an air-to-air delta as a successful placement.
+            if (placed && !level.getBlockState(pos).equals(desired)) {
+                forgeSnapshot.restore(true, false);
+                placed = false;
+            }
+        } catch (Throwable throwable) {
+            try { forgeSnapshot.restore(true, false); } catch (Throwable ignored) { }
+            MyDimension.LOGGER.warn("Builder placement failed safely at {} in {}", pos,
+                    level.dimension().location(), throwable);
+            placed = false;
+        }
+        if (!placed) {
+            result.blocked++;
+            return true;
+        }
+        WorldDelta.Snapshot after;
+        try {
+            after = WorldDelta.snapshot(level, pos);
+        } catch (Throwable throwable) {
+            try { forgeSnapshot.restore(true, false); } catch (Throwable ignored) { }
+            result.blocked++;
+            MyDimension.LOGGER.warn("Builder rolled back placement at {} because its after-image failed",
+                    pos, throwable);
+            return true;
+        }
+        if (pool != null) {
+            pool.available -= costCount;
+            addLedgerStack(result.debits, pool.template.copyWithCount(costCount));
+        }
+        result.changed.add(new WorldDelta(pos, before.state(), before.blockEntity(),
+                after.state(), after.blockEntity()));
+        return true;
+    }
+
+    /** Runs at most two passes; values returning false after pass two remain unresolved. */
+    static <T> List<T> processWithSingleRetry(List<T> values, java.util.function.Predicate<T> process) {
+        List<T> deferred = new ArrayList<>();
+        for (T value : values) {
+            if (!process.test(value)) deferred.add(value);
+        }
+        if (deferred.isEmpty()) return List.of();
+        List<T> unresolved = new ArrayList<>();
+        for (T value : deferred) {
+            if (!process.test(value)) unresolved.add(value);
+        }
+        return List.copyOf(unresolved);
     }
 
     private static Execution demolish(ServerPlayer player, ItemStack scepter,
@@ -299,16 +358,29 @@ public final class BuilderOperationManager {
                 continue;
             }
 
-            BuilderDropCapture.CaptureResult<Boolean> captured;
+            boolean removed;
+            List<ItemStack> capturedDrops;
             try {
-                captured = BuilderDropCapture.capture(() -> level.destroyBlock(pos, false, player));
+                if (tool.canDrop) {
+                    BuilderDropCapture.CaptureResult<Boolean> captured = BuilderDropCapture.capture(
+                            () -> level.destroyBlock(pos, false, player));
+                    removed = captured.value();
+                    capturedDrops = captured.drops();
+                } else if (tool.recognized) {
+                    removed = BuilderDropCapture.discardEntities(
+                            () -> level.destroyBlock(pos, false, player));
+                    capturedDrops = List.of();
+                } else {
+                    removed = removeWithoutBreakEffect(level, pos);
+                    capturedDrops = List.of();
+                }
             } catch (Throwable throwable) {
                 restoreSnapshots(level, beforeImages);
                 result.blocked++;
                 MyDimension.LOGGER.warn("Builder rolled back failed demolition at {}", pos, throwable);
                 continue;
             }
-            if (!captured.value()) {
+            if (!removed) {
                 restoreSnapshots(level, beforeImages);
                 result.blocked++;
                 continue;
@@ -327,16 +399,16 @@ public final class BuilderOperationManager {
                 continue;
             }
 
-            List<ItemStack> drops = new ArrayList<>();
             if (tool.canDrop) {
+                List<ItemStack> drops = new ArrayList<>(normalDrops.size() + capturedDrops.size());
                 normalDrops.forEach(stack -> drops.add(stack.copy()));
-                captured.drops().forEach(stack -> drops.add(stack.copy()));
+                capturedDrops.forEach(stack -> drops.add(stack.copy()));
                 drops.forEach(drop -> addLedgerStack(result.credits, drop));
                 dropOverflowAt(level, pos, transactionId, BuilderMaterials.insert(player, scepter, drops));
             }
             // Settle the Nth block's drops with the pre-damage tool, then apply exactly one durability point.
             // If this breaks the tool, only subsequent blocks lose harvesting eligibility.
-            if (tool.damage && !isFree(player)) {
+            if (tool.recognized && !isFree(player)) {
                 player.getOffhandItem().hurtAndBreak(1, player,
                         broken -> broken.broadcastBreakEvent(InteractionHand.OFF_HAND));
             }
@@ -349,6 +421,17 @@ public final class BuilderOperationManager {
         }
         result.offhandAfter = player.getOffhandItem().copy();
         return result;
+    }
+
+    /**
+     * Removes a block without ServerLevel#destroyBlock's level-event 2001.
+     * Level#removeBlock still restores the contained fluid and runs ordinary
+     * setBlock/onRemove/neighbor lifecycle.  Any lifecycle-generated entities
+     * are canceled rather than captured because this path is deliberately
+     * drop-free.
+     */
+    static boolean removeWithoutBreakEffect(ServerLevel level, BlockPos pos) {
+        return BuilderDropCapture.discardEntities(() -> level.removeBlock(pos, false));
     }
 
     private static Map<BlockPos, WorldDelta.Snapshot> snapshotDemolitionArea(ServerLevel level, BlockPos pos,
@@ -525,15 +608,14 @@ public final class BuilderOperationManager {
         return calculated == null ? blockItem.getBlock().defaultBlockState() : calculated;
     }
 
-    private static boolean validBuildTarget(ServerPlayer player, BlockPos pos, BlockState desired,
-                                            BlockState existing) {
+    private static boolean validBuildEnvelope(ServerPlayer player, BlockPos pos, BlockState desired,
+                                              BlockState existing) {
         ServerLevel level = player.serverLevel();
         WorldBorder border = level.getWorldBorder();
         if (pos.getY() < level.getMinBuildHeight() || pos.getY() >= level.getMaxBuildHeight()
                 || !border.isWithinBounds(pos) || !existing.canBeReplaced()
                 || desired.is(BuilderTags.CONSTRUCTION_PROTECTED)
-                || desired.is(BuilderTags.TRANSACTION_UNSAFE)
-                || !desired.canSurvive(level, pos)) return false;
+                || desired.is(BuilderTags.TRANSACTION_UNSAFE)) return false;
         // Match normal BlockItem placement semantics: no solid collision shape may intersect any
         // player, mob, vehicle or other collidable entity at the target, not merely the operator.
         return level.isUnobstructed(desired, pos, CollisionContext.empty());
@@ -789,13 +871,15 @@ public final class BuilderOperationManager {
         }
     }
 
-    public record Result(int changed, int missing, int blocked, boolean truncated, String rejectionKey) {
+    public record Result(int changed, int missing, int blocked, boolean truncated, String rejectionKey,
+                         boolean shouldSynchronize) {
         public static Result disabled() { return rejected("message.mydimension.builder.disabled"); }
-        public static Result rejected(String key) { return new Result(0, 0, 0, false, key); }
+        public static Result rejected(String key) { return new Result(0, 0, 0, false, key, false); }
+        public static Result throttled() { return new Result(0, 0, 0, false, null, false); }
         public boolean accepted() { return rejectionKey == null; }
     }
 
-    private record ToolCheck(boolean damage, boolean canDrop) {
+    private record ToolCheck(boolean recognized, boolean canDrop) {
     }
 
     private static final class Execution {

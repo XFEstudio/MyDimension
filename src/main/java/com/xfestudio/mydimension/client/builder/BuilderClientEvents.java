@@ -57,7 +57,7 @@ public final class BuilderClientEvents {
                 cancel(event);
                 return;
             }
-            if (Screen.hasAltDown() && BuilderPreviewState.get().isBlueprintPreviewActive()) {
+            if (Screen.hasAltDown() && BuilderPreviewState.get().hasBlueprintWheelActions()) {
                 ALT_ACTIONS.openNavigation();
                 ALT_ACTIONS.activateOrConfirm();
                 cancel(event);
@@ -107,13 +107,21 @@ public final class BuilderClientEvents {
             return;
         }
 
-        if (event.isAttack() && BuilderPreviewState.get().hasHoveredCancelableTarget()) {
+        if (event.isAttack()) {
             BuilderPreviewState preview = BuilderPreviewState.get();
-            BuilderClientServices.send(new BuilderClientCommand.CancelActive(preview.activeJobId()));
-            if (preview.isBlueprintPreviewActive()) {
-                BuilderClientNetworkBridge.cancelBlueprintWorkflow();
+            BuilderPreviewState.CancelTarget cancelTarget = preview.focusedCancelTarget();
+            if (cancelTarget == null) return;
+            switch (cancelTarget) {
+                case DEPLOYMENT -> {
+                    BuilderClientServices.send(new BuilderClientCommand.CancelBlueprint());
+                    BuilderClientNetworkBridge.cancelPlacementPreview();
+                }
+                case SELECTION -> BuilderClientNetworkBridge.cancelSourceSelection();
+                case MISSING -> {
+                    BuilderClientServices.send(new BuilderClientCommand.CancelActive(preview.activeJobId()));
+                    preview.clearMissingPreview();
+                }
             }
-            preview.clearLocalWorkflow();
             cancel(event);
         }
     }
@@ -132,7 +140,7 @@ public final class BuilderClientEvents {
             }
             return;
         }
-        if (!Screen.hasAltDown() || !BuilderPreviewState.get().isBlueprintPreviewActive()) return;
+        if (!Screen.hasAltDown() || !BuilderPreviewState.get().hasBlueprintWheelActions()) return;
         ALT_ACTIONS.openNavigation();
         if (ALT_ACTIONS.scroll(event.getScrollDelta())) {
             event.setCanceled(true);
@@ -158,6 +166,7 @@ public final class BuilderClientEvents {
             return;
         }
         Minecraft minecraft = Minecraft.getInstance();
+        BuilderAnchorPreviewTracker.tick(minecraft);
         if (minecraft.screen != null || !BuilderClientServices.isHoldingRealmwright(minecraft)) {
             drain(BuilderKeyMappings.TOGGLE_MODE);
             drain(BuilderKeyMappings.UNDO);

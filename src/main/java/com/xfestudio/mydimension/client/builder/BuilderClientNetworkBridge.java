@@ -105,6 +105,8 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
             }
         } else if (command instanceof BuilderClientCommand.CancelActive value) {
             ModNetwork.CHANNEL.sendToServer(BuilderCommandPacket.cancel(value.activeJobId()));
+        } else if (command instanceof BuilderClientCommand.CancelBlueprint) {
+            ModNetwork.CHANNEL.sendToServer(BuilderCommandPacket.cancelBlueprint());
         } else if (command instanceof BuilderClientCommand.Undo) {
             ModNetwork.CHANNEL.sendToServer(BuilderCommandPacket.undo());
         } else if (command instanceof BuilderClientCommand.Redo) {
@@ -180,10 +182,13 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
                 .map(cell -> new BuilderPreviewState.Cell(cell.pos(), cell.state(),
                         BuilderPreviewState.Kind.valueOf(cell.kind().name()), cell.ghost()))
                 .toList();
-        BuilderPreviewState.Selection selection = new BuilderPreviewState.Selection(
-                dimension, packet.first(), packet.second());
+        BuilderPreviewState.Snapshot current = BuilderPreviewState.get().snapshot();
+        BuilderPreviewState.Selection selection = BuilderPreviewState.mergeSelection(
+                dimension, packet.first(), packet.second(), current);
+        boolean cancelable = BuilderPreviewState.mergeCancelable(packet.cancelable(),
+                packet.blueprintPreview(), selection);
         BuilderPreviewState.get().accept(new BuilderPreviewState.Snapshot(dimension, cells, selection,
-                packet.activeJobId(), packet.blueprintPreview(), packet.cancelable(), packet.revision()));
+                packet.activeJobId(), packet.blueprintPreview(), cancelable, packet.revision()));
     }
 
     @Override
@@ -265,6 +270,26 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
         BuilderPreviewState.get().clearLocalWorkflow();
     }
 
+    /** Drops only the transformed placement and keeps a source selection available for saving. */
+    public static void cancelPlacementPreview() {
+        INSTANCE.selectedBlueprintId = null;
+        INSTANCE.selectedBlueprint = null;
+        INSTANCE.blueprintToken = null;
+        INSTANCE.pendingUpload = null;
+        INSTANCE.pendingPlacement = null;
+        INSTANCE.lastPreviewAnchor = null;
+        INSTANCE.previewDirty = false;
+        INSTANCE.transform = BlueprintTransform.NONE;
+        INSTANCE.offset = BlockPos.ZERO;
+        BuilderPreviewState.get().clearPlacementPreview();
+    }
+
+    /** Cancels only the source-corner workflow; an already copied deployment remains selected. */
+    public static void cancelSourceSelection() {
+        INSTANCE.pendingSelectionCapture = null;
+        BuilderPreviewState.get().clearSelection();
+    }
+
     private void selectBlueprint(UUID id) {
         ClientBlueprintLibrary.get().blueprint(id).ifPresentOrElse(blueprint -> {
             selectedBlueprint = blueprint;
@@ -343,7 +368,7 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
     private void executeBlueprintAction(BlueprintAltActionController.Action action) {
         if (action == BlueprintAltActionController.Action.SAVE) {
             BuilderPreviewState.Snapshot preview = BuilderPreviewState.get().snapshot();
-            if (preview != null && preview.selection().first() != null && preview.selection().second() != null) {
+            if (preview != null && preview.selection() != null && preview.selection().complete()) {
                 Minecraft minecraft = Minecraft.getInstance();
                 minecraft.setScreen(new BlueprintCaptureScreen(minecraft.screen));
             }
@@ -413,7 +438,11 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
             BuilderPreviewState.Kind kind = current.equals(block.state())
                     ? BuilderPreviewState.Kind.BLUEPRINT
                     : current.canBeReplaced() ? BuilderPreviewState.Kind.BUILD : BuilderPreviewState.Kind.INVALID;
-            return new BuilderPreviewState.Cell(block.worldPos(), block.state(), kind, kind != BuilderPreviewState.Kind.INVALID);
+            // An already-matching BLUEPRINT cell is the real world block itself. Baking a
+            // second translucent model at the exact same coordinates causes depth fighting
+            // while the player moves; retain its blue outline only.
+            return new BuilderPreviewState.Cell(block.worldPos(), block.state(), kind,
+                    kind == BuilderPreviewState.Kind.BUILD);
         }).toList();
         BuilderPreviewState.Snapshot old = BuilderPreviewState.get().snapshot();
         int revision = old == null ? 1 : old.revision() + 1;

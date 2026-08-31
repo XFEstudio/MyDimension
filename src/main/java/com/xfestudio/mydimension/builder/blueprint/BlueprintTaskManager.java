@@ -9,6 +9,7 @@ import com.xfestudio.mydimension.builder.history.BuilderHistoryData;
 import com.xfestudio.mydimension.builder.history.BuilderTransaction;
 import com.xfestudio.mydimension.config.BuilderConfig;
 import com.xfestudio.mydimension.registry.ModItems;
+import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
@@ -93,16 +94,23 @@ public final class BlueprintTaskManager {
                 || task.requiresFullDataPermission && !mayUseFullData(player)
                 || PendingBuildData.get(server).get(player.getUUID()) != null) return;
 
-        int limit = Math.min(BuilderRuntime.settings().editsPerTick(),
-                RealmwrightData.buildLimit(scepter, BuilderRuntime.settings().maxBuildLimit()));
-        int maximumEnd = Math.min(task.blocks.size(), task.cursor + Math.max(1, limit));
-        if (task.cursor < maximumEnd) {
+        int maximumEnd = workEnd(task.cursor, task.blocks.size(),
+                RealmwrightData.buildLimit(scepter, BuilderRuntime.settings().maxBuildLimit()),
+                BuilderRuntime.settings().maxBuildLimit());
+        // The usual case (the whole current budget is already in server view) is
+        // deliberately one executor call.  This scans every remote inventory once
+        // and prepares/commits history once, even when the blueprint crosses several
+        // chunk borders.  Off-screen work retains the per-chunk lease fallback below.
+        if (task.cursor < maximumEnd
+                && allTargetChunksLoaded(player.serverLevel(), task.blocks, task.cursor, maximumEnd)) {
+            BuilderOperationManager.BlueprintBatchResult result = BuilderOperationManager.executeBlueprintBatch(
+                    player, scepter, task.blocks.subList(task.cursor, maximumEnd), task.transactionId);
+            if (!acceptBatch(player, task, result)) return;
+            task.cursor = maximumEnd;
+        }
+        while (task.cursor < maximumEnd) {
             ChunkPos targetChunk = new ChunkPos(task.blocks.get(task.cursor).worldPos());
-            int end = task.cursor + 1;
-            while (end < maximumEnd
-                    && new ChunkPos(task.blocks.get(end).worldPos()).equals(targetChunk)) {
-                end++;
-            }
+            int end = nextChunkEnd(task.blocks, task.cursor, maximumEnd);
 
             TemporaryAnchorChunkLeases.Acquisition acquisition =
                     TemporaryAnchorChunkLeases.acquireTargetChunk(player, player.serverLevel(), targetChunk);
@@ -111,17 +119,53 @@ public final class BlueprintTaskManager {
             try (TemporaryAnchorChunkLeases.Lease ignored = acquisition.lease()) {
                 BuilderOperationManager.BlueprintBatchResult result = BuilderOperationManager.executeBlueprintBatch(
                         player, scepter, task.blocks.subList(task.cursor, end), task.transactionId);
-                if (!result.committed()) {
-                    // The executor has either compensated the entire unrecorded batch or left a
-                    // CONFLICTED marker for manual recovery. Never advance into the next batch.
-                    active.remove(player.getUUID());
-                    return;
-                }
-                task.missing.addAll(result.missing());
+                if (!acceptBatch(player, task, result)) return;
                 task.cursor = end;
             }
         }
         if (task.cursor >= task.blocks.size()) finish(player, task);
+    }
+
+    /** Inclusive cursor/exclusive end for one server tick's configured scepter budget. */
+    static int workEnd(int cursor, int size, int requestedBuildLimit, int serverHardLimit) {
+        int budget = Math.max(1, Math.min(requestedBuildLimit, Math.max(1, serverHardLimit)));
+        return (int) Math.min((long) size, (long) cursor + budget);
+    }
+
+    /** Keeps each temporary target-chunk lease scoped to one contiguous plan segment. */
+    static int nextChunkEnd(List<BlueprintPlacementPlan.PlannedBlock> blocks, int cursor, int maximumEnd) {
+        net.minecraft.core.BlockPos first = blocks.get(cursor).worldPos();
+        int chunkX = first.getX() >> 4;
+        int chunkZ = first.getZ() >> 4;
+        int end = cursor + 1;
+        while (end < maximumEnd) {
+            net.minecraft.core.BlockPos next = blocks.get(end).worldPos();
+            if ((next.getX() >> 4) != chunkX || (next.getZ() >> 4) != chunkZ) break;
+            end++;
+        }
+        return end;
+    }
+
+    static boolean allTargetChunksLoaded(net.minecraft.server.level.ServerLevel level,
+                                         List<BlueprintPlacementPlan.PlannedBlock> blocks,
+                                         int cursor, int maximumEnd) {
+        for (int index = cursor; index < maximumEnd; index++) {
+            BlockPos position = blocks.get(index).worldPos();
+            if (!level.hasChunk(position.getX() >> 4, position.getZ() >> 4)) return false;
+        }
+        return true;
+    }
+
+    private boolean acceptBatch(ServerPlayer player, ActiveTask task,
+                                BuilderOperationManager.BlueprintBatchResult result) {
+        if (!result.committed()) {
+            // The executor has either compensated the entire unrecorded batch or left a
+            // CONFLICTED marker for manual recovery. Never advance into the next batch.
+            active.remove(player.getUUID());
+            return false;
+        }
+        task.missing.addAll(result.missing());
+        return true;
     }
 
     private void finish(ServerPlayer player, ActiveTask task) {

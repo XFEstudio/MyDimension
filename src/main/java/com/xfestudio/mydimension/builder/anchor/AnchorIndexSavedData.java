@@ -11,11 +11,15 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.saveddata.SavedData;
 
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /** Global UUID to dimension/position index for supply anchors. */
@@ -28,6 +32,8 @@ public final class AnchorIndexSavedData extends SavedData {
     private static final String FACING_TAG = "Facing";
 
     private final Map<UUID, AnchorLocation> locations = new HashMap<>();
+    /** Transient reverse lookup used to wake only cross-chunk anchors targeting a loaded chunk. */
+    private final Map<TargetChunk, Set<UUID>> anchorsByTargetChunk = new HashMap<>();
 
     public static AnchorIndexSavedData get(MinecraftServer server) {
         return server.overworld().getDataStorage().computeIfAbsent(
@@ -52,7 +58,10 @@ public final class AnchorIndexSavedData extends SavedData {
                 ResourceKey<Level> dimension = ResourceKey.create(Registries.DIMENSION, dimensionId);
                 BlockPos position = BlockPos.of(entry.getLong(POSITION_TAG));
                 Direction facing = Direction.from3DDataValue(entry.getByte(FACING_TAG));
-                data.locations.putIfAbsent(id, new AnchorLocation(dimension, position, facing));
+                AnchorLocation location = new AnchorLocation(dimension, position, facing);
+                if (data.locations.putIfAbsent(id, location) == null) {
+                    data.indexTargetChunk(id, location);
+                }
             } catch (RuntimeException exception) {
                 MyDimension.LOGGER.warn("Ignoring malformed supply anchor index entry", exception);
             }
@@ -71,6 +80,10 @@ public final class AnchorIndexSavedData extends SavedData {
             claimed = unusedId();
         }
         AnchorLocation previous = locations.put(claimed, location);
+        if (previous != null && !previous.equals(location)) {
+            unindexTargetChunk(claimed, previous);
+        }
+        indexTargetChunk(claimed, location);
         if (!location.equals(previous)) {
             setDirty();
         }
@@ -79,6 +92,10 @@ public final class AnchorIndexSavedData extends SavedData {
 
     public synchronized void update(UUID anchorId, AnchorLocation location) {
         AnchorLocation previous = locations.put(anchorId, location);
+        if (previous != null && !previous.equals(location)) {
+            unindexTargetChunk(anchorId, previous);
+        }
+        indexTargetChunk(anchorId, location);
         if (!location.equals(previous)) {
             setDirty();
         }
@@ -94,16 +111,36 @@ public final class AnchorIndexSavedData extends SavedData {
             return false;
         }
         locations.remove(anchorId);
+        unindexTargetChunk(anchorId, existing);
         setDirty();
         return true;
     }
 
     public synchronized boolean remove(UUID anchorId) {
-        if (locations.remove(anchorId) == null) {
+        AnchorLocation removed = locations.remove(anchorId);
+        if (removed == null) {
             return false;
         }
+        unindexTargetChunk(anchorId, removed);
         setDirty();
         return true;
+    }
+
+    /**
+     * Returns only anchors whose adjacent container cell belongs to {@code targetChunk}.
+     * This avoids scanning every block on chunk load and does not load an anchor chunk.
+     */
+    public synchronized List<AnchorLocation> findTargetingChunk(ResourceKey<Level> dimension,
+                                                                 ChunkPos targetChunk) {
+        Set<UUID> ids = anchorsByTargetChunk.get(new TargetChunk(dimension, targetChunk.toLong()));
+        if (ids == null || ids.isEmpty()) {
+            return List.of();
+        }
+        return ids.stream()
+                .map(locations::get)
+                .filter(location -> location != null)
+                .distinct()
+                .toList();
     }
 
     @Override
@@ -129,6 +166,22 @@ public final class AnchorIndexSavedData extends SavedData {
         return candidate;
     }
 
+    private void indexTargetChunk(UUID anchorId, AnchorLocation location) {
+        anchorsByTargetChunk.computeIfAbsent(TargetChunk.of(location), ignored -> new HashSet<>()).add(anchorId);
+    }
+
+    private void unindexTargetChunk(UUID anchorId, AnchorLocation location) {
+        TargetChunk key = TargetChunk.of(location);
+        Set<UUID> ids = anchorsByTargetChunk.get(key);
+        if (ids == null) {
+            return;
+        }
+        ids.remove(anchorId);
+        if (ids.isEmpty()) {
+            anchorsByTargetChunk.remove(key);
+        }
+    }
+
     public record AnchorLocation(ResourceKey<Level> dimension, BlockPos position, Direction facing) {
         public AnchorLocation {
             position = position.immutable();
@@ -140,6 +193,12 @@ public final class AnchorIndexSavedData extends SavedData {
 
         public Direction containerSide() {
             return facing.getOpposite();
+        }
+    }
+
+    private record TargetChunk(ResourceKey<Level> dimension, long chunkPosition) {
+        private static TargetChunk of(AnchorLocation location) {
+            return new TargetChunk(location.dimension(), new ChunkPos(location.containerPosition()).toLong());
         }
     }
 }

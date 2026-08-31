@@ -3,6 +3,7 @@ package com.xfestudio.mydimension.client;
 import com.xfestudio.mydimension.MyDimension;
 import com.xfestudio.mydimension.registry.ModEntities;
 import com.xfestudio.mydimension.registry.ModBlockEntities;
+import com.xfestudio.mydimension.client.builder.BuilderPreviewRenderTypes;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.EntityRenderersEvent;
 import net.minecraftforge.client.event.RegisterGuiOverlaysEvent;
@@ -24,6 +25,7 @@ public class ModClientEvents {
     @SubscribeEvent
     public static void registerShaders(RegisterShadersEvent event) throws IOException {
         MindPortalRenderType.registerShader(event);
+        BuilderPreviewRenderTypes.registerShaders(event);
     }
 
     @SubscribeEvent

@@ -3,6 +3,7 @@ package com.xfestudio.mydimension.builder.anchor;
 import com.xfestudio.mydimension.builder.ResonantAnchorTarget;
 import com.xfestudio.mydimension.config.BuilderConfig;
 import com.xfestudio.mydimension.registry.ModBlockEntities;
+import com.xfestudio.mydimension.registry.ModBlocks;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
@@ -161,8 +162,14 @@ public final class ResonantSupplyAnchorBlockEntity extends BlockEntity implement
     @Override
     public void onLoad() {
         super.onLoad();
-        if (!isRemoved() && level instanceof ServerLevel) {
+        if (!isRemoved() && level instanceof ServerLevel serverLevel) {
             registerInIndex();
+            if (BuilderConfig.isEnabled()
+                    && getBlockState().is(ModBlocks.RESONANT_SUPPLY_ANCHOR.get())) {
+                // One-shot lifecycle validation. Cross-chunk targets that are not loaded yet
+                // are woken precisely by ResonantSupplyAnchorLifecycle when their chunk loads.
+                serverLevel.scheduleTick(worldPosition, getBlockState().getBlock(), 1);
+            }
         }
     }
 

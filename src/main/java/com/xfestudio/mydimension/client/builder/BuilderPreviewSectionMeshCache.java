@@ -5,86 +5,125 @@ import com.mojang.blaze3d.vertex.BufferBuilder;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexBuffer;
+import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.mojang.blaze3d.vertex.VertexFormat;
-import net.minecraft.client.renderer.LevelRenderer;
-import net.minecraft.client.renderer.culling.Frustum;
+import com.xfestudio.mydimension.MyDimension;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import it.unimi.dsi.fastutil.longs.LongSet;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.LightTexture;
+import net.minecraft.client.renderer.MultiBufferSource;
+import net.minecraft.client.renderer.texture.OverlayTexture;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import net.minecraftforge.client.model.data.ModelData;
+import net.minecraftforge.registries.ForgeRegistries;
 
 import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.EnumMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
- * Persistent preview geometry grouped by 16x16x16 render sections.
+ * Persistent builder-preview geometry grouped into 16x16x16 render sections.
  *
- * <p>Source cells are still admitted incrementally, but a section's line boxes
- * are expanded only when its static VBO is uploaded. Stable previews therefore
- * cost one draw per visible section instead of one CPU-side box expansion per
- * cell and frame. Ghost cells remain grouped here and are consumed through the
- * renderer's strict distance and frame budgets.</p>
+ * <p>Every section owns three static VBOs: shader-pack-safe quad outlines,
+ * translucent block models, and the animated six-face rift veil. A new
+ * snapshot reuses unchanged sections instead of discarding all GPU geometry;
+ * this is important while a large blueprint is shrinking every server tick.</p>
  */
 final class BuilderPreviewSectionMeshCache {
     private static final int SECTION_SHIFT = 4;
     private static final int SECTION_SIZE = 1 << SECTION_SHIFT;
-    private static final int OUTLINES_PER_INCREMENTAL_UPLOAD = 128;
-    private static final double DASH_LENGTH = 0.14D;
-    private static final double DASH_GAP = 0.09D;
+    private static final double FRUSTUM_GUARD = 1.5D;
+    private static final double OUTLINE_HALF_WIDTH = 0.010D;
+    private static final int WAVE_CELLS_PER_UPLOAD = 256;
+    private static final int MODEL_CELLS_PER_UPLOAD = 128;
+    private static final Set<ResourceLocation> WARNED_MODEL_TYPES = new HashSet<>();
 
     @Nullable
     private BuilderPreviewState.Snapshot source;
-    private int nextCell;
-    private final Map<SectionKey, SectionMesh> sections = new LinkedHashMap<>();
+    private Map<SectionKey, SectionMesh> sections = new LinkedHashMap<>();
 
-    /** Advances CPU-side cache construction by at most {@code cellBudget} cells. */
-    void advance(@Nullable BuilderPreviewState.Snapshot snapshot, int cellBudget) {
+    /** Synchronizes lightweight cell groups; expensive geometry stays render-budgeted. */
+    void advance(@Nullable BuilderPreviewState.Snapshot snapshot, int ignoredCellBudget) {
         synchronize(snapshot);
-        if (source == null || cellBudget <= 0) return;
-
-        List<BuilderPreviewState.Cell> cells = source.cells();
-        int end = Math.min(cells.size(), nextCell + cellBudget);
-        while (nextCell < end) {
-            BuilderPreviewState.Cell cell = cells.get(nextCell++);
-            SectionKey key = SectionKey.of(cell);
-            sections.computeIfAbsent(key, SectionMesh::new).add(cell);
-        }
     }
 
-    /** Returns frustum-visible sections nearest-first. */
-    List<SectionMesh> visibleSections(Frustum frustum, Vec3 camera) {
+    /** Returns in-range, frustum-visible sections nearest-first. */
+    List<SectionMesh> visibleSections(net.minecraft.client.renderer.culling.Frustum frustum,
+                                      Vec3 camera, double maximumDistanceSqr) {
         List<SectionMesh> visible = new ArrayList<>();
         for (SectionMesh section : sections.values()) {
-            if (frustum.isVisible(section.bounds())) visible.add(section);
+            if (section.closestDistanceToSqr(camera) > maximumDistanceSqr) continue;
+            if (frustum.isVisible(section.bounds().inflate(FRUSTUM_GUARD))) visible.add(section);
         }
         visible.sort(Comparator.comparingDouble(section -> section.distanceToSqr(camera)));
         return visible;
     }
 
-    /** Uploads at most {@code uploadBudget} dirty visible section VBOs. */
-    void prepareVisibleSections(List<SectionMesh> visible, int uploadBudget) {
+    /** Uploads one dirty section, then continues only while both budgets allow. */
+    void prepareVisibleSections(Minecraft minecraft, List<SectionMesh> visible, Vec3 camera,
+                                double modelDistanceSqr, int uploadBudget, long deadlineNanos) {
         if (uploadBudget <= 0) return;
-        boolean sourceComplete = source != null && nextCell >= source.cells().size();
         int uploaded = 0;
         for (SectionMesh section : visible) {
             if (uploaded >= uploadBudget) break;
-            if (section.uploadIfNeeded(sourceComplete)) uploaded++;
+            if (uploaded > 0 && System.nanoTime() >= deadlineNanos) break;
+            boolean buildModels = section.closestDistanceToSqr(camera) <= modelDistanceSqr;
+            if (section.uploadNext(minecraft, buildModels)) uploaded++;
         }
     }
 
     void clear() {
         source = null;
-        nextCell = 0;
         sections.values().forEach(SectionMesh::close);
         sections.clear();
     }
 
     private void synchronize(@Nullable BuilderPreviewState.Snapshot snapshot) {
         if (source == snapshot) return;
-        clear();
+        if (snapshot == null) {
+            clear();
+            return;
+        }
+        if (source != null
+                && source.dimension().equals(snapshot.dimension())
+                && source.cells().equals(snapshot.cells())) {
+            source = snapshot;
+            return;
+        }
+
+        Map<SectionKey, List<BuilderPreviewState.Cell>> grouped = new LinkedHashMap<>();
+        LongSet missingGhostPositions = new LongOpenHashSet();
+        for (BuilderPreviewState.Cell cell : snapshot.cells()) {
+            grouped.computeIfAbsent(SectionKey.of(cell), ignored -> new ArrayList<>()).add(cell);
+            if (isWaveCell(cell)) missingGhostPositions.add(cell.pos().asLong());
+        }
+
+        Map<SectionKey, SectionMesh> previous = sections;
+        Map<SectionKey, SectionMesh> replacement = new LinkedHashMap<>(grouped.size());
+        for (Map.Entry<SectionKey, List<BuilderPreviewState.Cell>> entry : grouped.entrySet()) {
+            SectionMesh existing = previous.remove(entry.getKey());
+            if (existing != null && existing.matches(entry.getValue(), missingGhostPositions)) {
+                replacement.put(entry.getKey(), existing);
+            } else {
+                if (existing != null) existing.close();
+                replacement.put(entry.getKey(), new SectionMesh(
+                        entry.getKey(), entry.getValue(), missingGhostPositions));
+            }
+        }
+        previous.values().forEach(SectionMesh::close);
+        previous.clear();
+        sections = replacement;
         source = snapshot;
     }
 
@@ -93,75 +132,135 @@ final class BuilderPreviewSectionMeshCache {
         private final int originY;
         private final int originZ;
         private final AABB bounds;
-        private final List<BuilderPreviewState.Cell> outlines = new ArrayList<>();
-        private final EnumMap<BuilderPreviewState.Kind, List<BuilderPreviewState.Cell>> ghosts =
-                new EnumMap<>(BuilderPreviewState.Kind.class);
+        private final List<BuilderPreviewState.Cell> cells;
+        private final List<WaveCell> waveCells;
+        private final boolean hasGhosts;
 
         @Nullable private VertexBuffer outlineBuffer;
-        private int uploadedOutlineCount;
-        private boolean dirty;
+        private final List<VertexBuffer> ghostBuffers = new ArrayList<>();
+        private final List<VertexBuffer> waveBuffers = new ArrayList<>();
+        private int ghostCursor;
+        private int waveCursor;
 
-        private SectionMesh(SectionKey key) {
+        private SectionMesh(SectionKey key, List<BuilderPreviewState.Cell> cells,
+                            LongSet missingGhostPositions) {
             originX = key.x() * SECTION_SIZE;
             originY = key.y() * SECTION_SIZE;
             originZ = key.z() * SECTION_SIZE;
             bounds = new AABB(originX, originY, originZ,
                     originX + SECTION_SIZE, originY + SECTION_SIZE, originZ + SECTION_SIZE)
-                    .inflate(0.01D);
+                    .inflate(0.02D);
+            this.cells = List.copyOf(cells);
+            waveCells = createWaveCells(cells, missingGhostPositions, originX, originY, originZ);
+            hasGhosts = cells.stream().anyMatch(BuilderPreviewState.Cell::ghost);
         }
 
-        private void add(BuilderPreviewState.Cell cell) {
-            outlines.add(cell);
-            dirty = true;
-            if (cell.ghost()) {
-                ghosts.computeIfAbsent(cell.kind(), ignored -> new ArrayList<>()).add(cell);
-            }
+        private boolean matches(List<BuilderPreviewState.Cell> replacement,
+                                LongSet missingGhostPositions) {
+            return cells.equals(replacement)
+                    && waveCells.equals(createWaveCells(
+                    replacement, missingGhostPositions, originX, originY, originZ));
         }
 
-        private boolean uploadIfNeeded(boolean sourceComplete) {
-            if (!dirty || outlines.isEmpty()) return false;
-            int addedSinceUpload = outlines.size() - uploadedOutlineCount;
-            if (outlineBuffer != null && !sourceComplete
-                    && addedSinceUpload < OUTLINES_PER_INCREMENTAL_UPLOAD) return false;
+        private boolean uploadNext(Minecraft minecraft, boolean buildModels) {
             RenderSystem.assertOnRenderThread();
+            if (outlineBuffer == null) {
+                outlineBuffer = uploadOutlineBuffer();
+                return true;
+            }
+            if (waveCursor < waveCells.size()) {
+                int end = Math.min(waveCells.size(), waveCursor + WAVE_CELLS_PER_UPLOAD);
+                VertexBuffer wave = uploadWaveBuffer(waveCursor, end);
+                waveCursor = end;
+                if (wave != null) waveBuffers.add(wave);
+                return true;
+            }
+            if (hasGhosts && buildModels && ghostCursor < cells.size()) {
+                int end = Math.min(cells.size(), ghostCursor + MODEL_CELLS_PER_UPLOAD);
+                VertexBuffer ghost = uploadGhostBuffer(minecraft, ghostCursor, end);
+                ghostCursor = end;
+                if (ghost != null) ghostBuffers.add(ghost);
+                return true;
+            }
+            return false;
+        }
 
-            BufferBuilder builder = new BufferBuilder(Math.max(256, outlines.size() * 24));
-            builder.begin(VertexFormat.Mode.LINES, DefaultVertexFormat.POSITION_COLOR_NORMAL);
-            PoseStack identity = new PoseStack();
-            for (BuilderPreviewState.Cell cell : outlines) {
-                AABB local = cell.bounds().move(-originX, -originY, -originZ);
-                if (cell.kind() == BuilderPreviewState.Kind.INVALID) {
-                    emitDashedBox(builder, local, cell.kind());
+        @Nullable
+        private VertexBuffer uploadOutlineBuffer() {
+            Set<EdgeKey> edges = new HashSet<>(Math.max(16, cells.size() * 4));
+            for (BuilderPreviewState.Cell cell : cells) {
+                int x = cell.pos().getX() - originX;
+                int y = cell.pos().getY() - originY;
+                int z = cell.pos().getZ() - originZ;
+                addCellEdges(edges, x, y, z, cell.kind());
+            }
+            BufferBuilder builder = new BufferBuilder(Math.max(512, edges.size() * 160));
+            builder.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
+            PoseStack.Pose identity = new PoseStack().last();
+            for (EdgeKey edge : edges) {
+                double x2 = edge.x() + (edge.axis() == Axis.X ? 1.0D : 0.0D);
+                double y2 = edge.y() + (edge.axis() == Axis.Y ? 1.0D : 0.0D);
+                double z2 = edge.z() + (edge.axis() == Axis.Z ? 1.0D : 0.0D);
+                if (edge.kind() == BuilderPreviewState.Kind.INVALID) {
+                    emitDashedEdge(identity, builder, edge.x(), edge.y(), edge.z(),
+                            x2, y2, z2, edge.kind());
                 } else {
-                    LevelRenderer.renderLineBox(identity, builder, local,
-                            cell.kind().red(), cell.kind().green(), cell.kind().blue(), cell.kind().alpha());
+                    BuilderPreviewGeometry.emitEdge(identity, builder,
+                            edge.x(), edge.y(), edge.z(), x2, y2, z2,
+                            edge.kind(), OUTLINE_HALF_WIDTH, 1.0F);
                 }
             }
+            return upload(builder);
+        }
 
-            BufferBuilder.RenderedBuffer rendered = builder.endOrDiscardIfEmpty();
-            if (rendered == null) {
-                dirty = false;
-                uploadedOutlineCount = outlines.size();
-                return false;
+        @Nullable
+        private VertexBuffer uploadGhostBuffer(Minecraft minecraft, int start, int end) {
+            BufferBuilder builder = new BufferBuilder(Math.max(4096, (end - start) * 1024));
+            builder.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.NEW_ENTITY);
+            PoseStack pose = new PoseStack();
+            for (int index = start; index < end; index++) {
+                BuilderPreviewState.Cell cell = cells.get(index);
+                if (!cell.ghost() || cell.state().isAir()
+                        || cell.state().getRenderShape() == RenderShape.INVISIBLE) continue;
+                pose.pushPose();
+                pose.translate(cell.pos().getX() - originX,
+                        cell.pos().getY() - originY,
+                        cell.pos().getZ() - originZ);
+                VertexConsumer tinted = new GhostVertexConsumer(builder, cell.kind());
+                MultiBufferSource singleBuffer = ignored -> tinted;
+                try {
+                    minecraft.getBlockRenderer().renderSingleBlock(cell.state(), pose, singleBuffer,
+                            LightTexture.FULL_BRIGHT, OverlayTexture.NO_OVERLAY, ModelData.EMPTY,
+                            BuilderPreviewRenderTypes.ghostModel());
+                } catch (RuntimeException exception) {
+                    ResourceLocation blockId = ForgeRegistries.BLOCKS.getKey(cell.state().getBlock());
+                    if (blockId != null && WARNED_MODEL_TYPES.add(blockId)) {
+                        MyDimension.LOGGER.warn("Skipping incompatible projected block model {}",
+                                blockId, exception);
+                    }
+                }
+                pose.popPose();
             }
-            if (outlineBuffer == null || outlineBuffer.isInvalid()) {
-                outlineBuffer = new VertexBuffer(VertexBuffer.Usage.STATIC);
+            return upload(builder);
+        }
+
+        @Nullable
+        private VertexBuffer uploadWaveBuffer(int start, int end) {
+            BufferBuilder builder = new BufferBuilder(Math.max(2048, (end - start) * 640));
+            builder.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR_TEX);
+            PoseStack.Pose identity = new PoseStack().last();
+            for (int index = start; index < end; index++) {
+                WaveCell cell = waveCells.get(index);
+                BuilderPreviewGeometry.emitWaveCube(identity, builder,
+                        cell.x(), cell.y(), cell.z(), cell.faceMask());
             }
-            outlineBuffer.bind();
-            outlineBuffer.upload(rendered);
-            VertexBuffer.unbind();
-            uploadedOutlineCount = outlines.size();
-            dirty = false;
-            return true;
+            return upload(builder);
         }
 
         AABB bounds() { return bounds; }
-
-        List<BuilderPreviewState.Cell> ghosts(BuilderPreviewState.Kind kind) {
-            return ghosts.getOrDefault(kind, List.of());
-        }
-
         @Nullable VertexBuffer outlineBuffer() { return outlineBuffer; }
+        List<VertexBuffer> ghostBuffers() { return ghostBuffers; }
+        List<VertexBuffer> waveBuffers() { return waveBuffers; }
         int originX() { return originX; }
         int originY() { return originY; }
         int originZ() { return originZ; }
@@ -181,8 +280,15 @@ final class BuilderPreviewSectionMeshCache {
         }
 
         private void close() {
-            VertexBuffer buffer = outlineBuffer;
+            close(outlineBuffer);
+            ghostBuffers.forEach(SectionMesh::close);
+            waveBuffers.forEach(SectionMesh::close);
             outlineBuffer = null;
+            ghostBuffers.clear();
+            waveBuffers.clear();
+        }
+
+        private static void close(@Nullable VertexBuffer buffer) {
             if (buffer == null || buffer.isInvalid()) return;
             if (RenderSystem.isOnRenderThread()) buffer.close();
             else RenderSystem.recordRenderCall(buffer::close);
@@ -195,22 +301,34 @@ final class BuilderPreviewSectionMeshCache {
         }
     }
 
-    private static void emitDashedBox(BufferBuilder builder, AABB box, BuilderPreviewState.Kind kind) {
-        emitDashedEdge(builder, box.minX, box.minY, box.minZ, box.maxX, box.minY, box.minZ, kind);
-        emitDashedEdge(builder, box.minX, box.maxY, box.minZ, box.maxX, box.maxY, box.minZ, kind);
-        emitDashedEdge(builder, box.minX, box.minY, box.maxZ, box.maxX, box.minY, box.maxZ, kind);
-        emitDashedEdge(builder, box.minX, box.maxY, box.maxZ, box.maxX, box.maxY, box.maxZ, kind);
-        emitDashedEdge(builder, box.minX, box.minY, box.minZ, box.minX, box.maxY, box.minZ, kind);
-        emitDashedEdge(builder, box.maxX, box.minY, box.minZ, box.maxX, box.maxY, box.minZ, kind);
-        emitDashedEdge(builder, box.minX, box.minY, box.maxZ, box.minX, box.maxY, box.maxZ, kind);
-        emitDashedEdge(builder, box.maxX, box.minY, box.maxZ, box.maxX, box.maxY, box.maxZ, kind);
-        emitDashedEdge(builder, box.minX, box.minY, box.minZ, box.minX, box.minY, box.maxZ, kind);
-        emitDashedEdge(builder, box.maxX, box.minY, box.minZ, box.maxX, box.minY, box.maxZ, kind);
-        emitDashedEdge(builder, box.minX, box.maxY, box.minZ, box.minX, box.maxY, box.maxZ, kind);
-        emitDashedEdge(builder, box.maxX, box.maxY, box.minZ, box.maxX, box.maxY, box.maxZ, kind);
+    @Nullable
+    private static VertexBuffer upload(BufferBuilder builder) {
+        BufferBuilder.RenderedBuffer rendered = builder.endOrDiscardIfEmpty();
+        if (rendered == null) return null;
+        VertexBuffer buffer = new VertexBuffer(VertexBuffer.Usage.STATIC);
+        buffer.bind();
+        buffer.upload(rendered);
+        VertexBuffer.unbind();
+        return buffer;
     }
 
-    private static void emitDashedEdge(BufferBuilder builder,
+    private static void addCellEdges(Set<EdgeKey> edges, int x, int y, int z,
+                                     BuilderPreviewState.Kind kind) {
+        edges.add(new EdgeKey(x, y, z, Axis.X, kind));
+        edges.add(new EdgeKey(x, y + 1, z, Axis.X, kind));
+        edges.add(new EdgeKey(x, y, z + 1, Axis.X, kind));
+        edges.add(new EdgeKey(x, y + 1, z + 1, Axis.X, kind));
+        edges.add(new EdgeKey(x, y, z, Axis.Y, kind));
+        edges.add(new EdgeKey(x + 1, y, z, Axis.Y, kind));
+        edges.add(new EdgeKey(x, y, z + 1, Axis.Y, kind));
+        edges.add(new EdgeKey(x + 1, y, z + 1, Axis.Y, kind));
+        edges.add(new EdgeKey(x, y, z, Axis.Z, kind));
+        edges.add(new EdgeKey(x + 1, y, z, Axis.Z, kind));
+        edges.add(new EdgeKey(x, y + 1, z, Axis.Z, kind));
+        edges.add(new EdgeKey(x + 1, y + 1, z, Axis.Z, kind));
+    }
+
+    private static void emitDashedEdge(PoseStack.Pose pose, VertexConsumer consumer,
                                        double x1, double y1, double z1,
                                        double x2, double y2, double z2,
                                        BuilderPreviewState.Kind kind) {
@@ -218,35 +336,129 @@ final class BuilderPreviewSectionMeshCache {
         double dy = y2 - y1;
         double dz = z2 - z1;
         double length = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        if (length <= 1.0E-6D) return;
-        float nx = (float) (dx / length);
-        float ny = (float) (dy / length);
-        float nz = (float) (dz / length);
-        for (double start = 0.0D; start < length; start += DASH_LENGTH + DASH_GAP) {
-            double end = Math.min(length, start + DASH_LENGTH);
-            emitSegment(builder,
-                    x1 + nx * start, y1 + ny * start, z1 + nz * start,
-                    x1 + nx * end, y1 + ny * end, z1 + nz * end,
-                    nx, ny, nz, kind);
+        for (double start = 0.0D; start < length; start += 0.235D) {
+            double end = Math.min(length, start + 0.15D);
+            double first = start / length;
+            double second = end / length;
+            BuilderPreviewGeometry.emitEdge(pose, consumer,
+                    x1 + dx * first, y1 + dy * first, z1 + dz * first,
+                    x1 + dx * second, y1 + dy * second, z1 + dz * second,
+                    kind, OUTLINE_HALF_WIDTH, 1.0F);
         }
     }
 
-    private static void emitSegment(BufferBuilder builder,
-                                    double x1, double y1, double z1,
-                                    double x2, double y2, double z2,
-                                    float nx, float ny, float nz,
-                                    BuilderPreviewState.Kind kind) {
-        builder.vertex(x1, y1, z1).color(kind.red(), kind.green(), kind.blue(), kind.alpha())
-                .normal(nx, ny, nz).endVertex();
-        builder.vertex(x2, y2, z2).color(kind.red(), kind.green(), kind.blue(), kind.alpha())
-                .normal(nx, ny, nz).endVertex();
-    }
+    private enum Axis { X, Y, Z }
+
+    private record WaveCell(int x, int y, int z, int faceMask) { }
+
+    private record EdgeKey(int x, int y, int z, Axis axis,
+                           BuilderPreviewState.Kind kind) { }
 
     private record SectionKey(int x, int y, int z) {
         private static SectionKey of(BuilderPreviewState.Cell cell) {
             return new SectionKey(cell.pos().getX() >> SECTION_SHIFT,
                     cell.pos().getY() >> SECTION_SHIFT,
                     cell.pos().getZ() >> SECTION_SHIFT);
+        }
+    }
+
+    private static boolean isWaveCell(BuilderPreviewState.Cell cell) {
+        return cell.ghost() && cell.kind() == BuilderPreviewState.Kind.MISSING
+                && !cell.state().isAir();
+    }
+
+    private static List<WaveCell> createWaveCells(List<BuilderPreviewState.Cell> cells,
+                                                   LongSet missingGhostPositions,
+                                                   int originX, int originY, int originZ) {
+        List<WaveCell> result = new ArrayList<>();
+        for (BuilderPreviewState.Cell cell : cells) {
+            if (!isWaveCell(cell)) continue;
+            long packed = cell.pos().asLong();
+            int faceMask = 0;
+            for (Direction direction : Direction.values()) {
+                if (!missingGhostPositions.contains(BlockPos.offset(packed, direction))) {
+                    faceMask |= 1 << direction.ordinal();
+                }
+            }
+            if (faceMask != 0) {
+                result.add(new WaveCell(cell.pos().getX() - originX,
+                        cell.pos().getY() - originY,
+                        cell.pos().getZ() - originZ, faceMask));
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    /** Applies stable projection tint and alpha while retaining the block atlas UVs. */
+    private static final class GhostVertexConsumer implements VertexConsumer {
+        private final VertexConsumer delegate;
+        private final float red;
+        private final float green;
+        private final float blue;
+        private final float alpha;
+
+        private GhostVertexConsumer(VertexConsumer delegate, BuilderPreviewState.Kind kind) {
+            this.delegate = delegate;
+            float mix = 0.18F;
+            red = 1.0F - mix + kind.red() * mix;
+            green = 1.0F - mix + kind.green() * mix;
+            blue = 1.0F - mix + kind.blue() * mix;
+            alpha = kind == BuilderPreviewState.Kind.MISSING ? 0.46F : 0.36F;
+        }
+
+        @Override
+        public VertexConsumer vertex(double x, double y, double z) {
+            delegate.vertex(x, y, z);
+            return this;
+        }
+
+        @Override
+        public VertexConsumer color(int r, int g, int b, int a) {
+            delegate.color(scale(r, red), scale(g, green), scale(b, blue), scale(a, alpha));
+            return this;
+        }
+
+        @Override
+        public VertexConsumer uv(float u, float v) {
+            delegate.uv(u, v);
+            return this;
+        }
+
+        @Override
+        public VertexConsumer overlayCoords(int u, int v) {
+            delegate.overlayCoords(u, v);
+            return this;
+        }
+
+        @Override
+        public VertexConsumer uv2(int u, int v) {
+            delegate.uv2(u, v);
+            return this;
+        }
+
+        @Override
+        public VertexConsumer normal(float x, float y, float z) {
+            delegate.normal(x, y, z);
+            return this;
+        }
+
+        @Override
+        public void endVertex() {
+            delegate.endVertex();
+        }
+
+        @Override
+        public void defaultColor(int r, int g, int b, int a) {
+            delegate.defaultColor(scale(r, red), scale(g, green), scale(b, blue), scale(a, alpha));
+        }
+
+        @Override
+        public void unsetDefaultColor() {
+            delegate.unsetDefaultColor();
+        }
+
+        private static int scale(int channel, float multiplier) {
+            return Math.max(0, Math.min(255, Math.round(channel * multiplier)));
         }
     }
 }

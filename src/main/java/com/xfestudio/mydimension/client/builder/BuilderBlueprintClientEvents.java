@@ -25,6 +25,7 @@ public final class BuilderBlueprintClientEvents {
         BuilderClientNetworkBridge.clearBlueprintSession();
         BuilderPreviewState.get().clear();
         BuilderPreviewRenderer.clearCache();
+        BuilderAnchorPreviewTracker.clear();
     }
 
     @Mod.EventBusSubscriber(modid = MyDimension.MOD_ID, bus = Mod.EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)

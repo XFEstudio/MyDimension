@@ -58,7 +58,7 @@ public final class BuilderConfig {
                 .comment("Hard server cap for the configurable number of blocks in one demolition batch.")
                 .defineInRange("maxDemolishLimit", 1024, 1, 65536);
         EDITS_PER_TICK = builder
-                .comment("Maximum world edits performed by one builder task per server tick.")
+                .comment("Average per-player edit budget used to gate repeated surface clicks. The first click is immediate; blueprint printing uses the scepter build limit.")
                 .defineInRange("editsPerTick", 64, 1, 4096);
         MAX_BOUND_ANCHORS = builder
                 .comment("Maximum number of ordered remote supply anchors bound to one scepter.")

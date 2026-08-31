@@ -8,7 +8,6 @@ import net.minecraft.world.level.block.state.BlockState;
 
 import javax.annotation.Nullable;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 
 /**
@@ -70,10 +69,25 @@ public final class BlueprintPlacementPlan {
             result.add(new PlannedBlock(relative, origin.offset(relative), transform.transform(blueprint.state(entry)),
                     entry.blockEntityTag()));
         }
-        result.sort(Comparator.comparingInt((PlannedBlock block) -> block.worldPos().getY())
-                .thenComparingInt(block -> block.worldPos().getZ())
-                .thenComparingInt(block -> block.worldPos().getX()));
+        // Keep every target chunk contiguous.  BlueprintTaskManager can then lease an
+        // off-screen chunk once and execute one material/history batch for it instead
+        // of bouncing between chunks once per row.  Y remains the primary order inside
+        // a chunk so ordinary foundations are still constructed before upper blocks.
+        result.sort(BlueprintPlacementPlan::compareForExecution);
         return new BlueprintPlacementPlan(blueprint, transform, targetAnchor, origin, result);
+    }
+
+    static int compareForExecution(PlannedBlock left, PlannedBlock right) {
+        BlockPos a = left.worldPos();
+        BlockPos b = right.worldPos();
+        int result = Integer.compare(a.getZ() >> 4, b.getZ() >> 4);
+        if (result != 0) return result;
+        result = Integer.compare(a.getX() >> 4, b.getX() >> 4);
+        if (result != 0) return result;
+        result = Integer.compare(a.getY(), b.getY());
+        if (result != 0) return result;
+        result = Integer.compare(a.getZ(), b.getZ());
+        return result != 0 ? result : Integer.compare(a.getX(), b.getX());
     }
 
     public BlueprintData blueprint() { return blueprint; }

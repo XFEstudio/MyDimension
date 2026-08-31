@@ -45,6 +45,10 @@ public sealed interface BuilderClientCommand {
     record CancelActive(UUID activeJobId) implements BuilderClientCommand {
     }
 
+    /** Cancels only queued/running blueprint placement, never a material-waiting surface task. */
+    record CancelBlueprint() implements BuilderClientCommand {
+    }
+
     record Undo() implements BuilderClientCommand {
     }
 

@@ -74,7 +74,7 @@ public final class RealmwrightScepterItem extends Item {
         if (!result.accepted() && result.rejectionKey() != null) {
             player.displayClientMessage(Component.translatable(result.rejectionKey()), true);
         }
-        BuilderNetworkBridge.sync(serverPlayer);
+        if (result.shouldSynchronize()) BuilderNetworkBridge.sync(serverPlayer);
         return result.accepted() ? InteractionResult.CONSUME : InteractionResult.FAIL;
     }
 

@@ -2,251 +2,259 @@ package com.xfestudio.mydimension.client.builder;
 
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.PoseStack;
-import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.mojang.blaze3d.vertex.VertexBuffer;
+import com.mojang.blaze3d.vertex.VertexConsumer;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.renderer.GameRenderer;
-import net.minecraft.client.renderer.LevelRenderer;
-import net.minecraft.client.renderer.LightTexture;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.ShaderInstance;
-import net.minecraft.client.renderer.texture.OverlayTexture;
 import net.minecraft.core.BlockPos;
+import net.minecraft.util.Mth;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.client.event.RenderLevelStageEvent;
-import net.minecraftforge.client.model.data.ModelData;
 
 import javax.annotation.Nullable;
 import java.util.List;
+import java.util.function.Function;
 
-/** Renders selection frames, operation boxes, and translucent ghost blocks. */
+/** Renders cached projection models, rift veils, and shader-safe solid outlines. */
 public final class BuilderPreviewRenderer {
-    private static final int MAX_GHOSTS_PER_KIND = 128;
-    private static final int MAX_GHOSTS_PER_FRAME = 256;
-    private static final double MAX_GHOST_DISTANCE_SQR = 64.0D * 64.0D;
-    private static final long GHOST_RENDER_BUDGET_NANOS = 1_500_000L;
-    private static final int SECTION_UPLOADS_PER_FRAME = 1;
+    private static final int MINIMUM_PREVIEW_DISTANCE = 160;
+    private static final int MAXIMUM_PREVIEW_DISTANCE = 512;
+    private static final int FULL_MODEL_DISTANCE = 128;
+    private static final int EXTRA_RENDER_SECTIONS = 4;
+    private static final int SECTION_UPLOADS_PER_FRAME = 3;
+    private static final long SECTION_UPLOAD_BUDGET_NANOS = 2_500_000L;
     private static final int CELLS_PREPARED_PER_TICK = 2048;
     private static final int CELLS_PREPARED_PER_FRAME = 768;
+    private static final double NORMAL_OUTLINE_WIDTH = 0.012D;
+    private static final double FOCUSED_OUTLINE_WIDTH = 0.048D;
     private static final BuilderPreviewSectionMeshCache SECTION_CACHE =
             new BuilderPreviewSectionMeshCache();
+    private static final BuilderFocusedOutlineCache FOCUSED_OUTLINE_CACHE =
+            new BuilderFocusedOutlineCache();
 
     private BuilderPreviewRenderer() {
     }
 
-    /** Performs the larger half of progressive cache construction once per client tick. */
     public static void tick(Minecraft minecraft) {
         BuilderPreviewState.Snapshot snapshot = BuilderPreviewState.get().snapshot();
         if (!BuilderClientServices.isHoldingRealmwright(minecraft)
                 || snapshot == null || minecraft.level == null
                 || !minecraft.level.dimension().equals(snapshot.dimension())) {
             SECTION_CACHE.clear();
+            FOCUSED_OUTLINE_CACHE.clear();
             return;
         }
         SECTION_CACHE.advance(snapshot, CELLS_PREPARED_PER_TICK);
     }
 
-    /** Drops all section meshes, including on disconnect and resource reload. */
     public static void clearCache() {
         SECTION_CACHE.clear();
+        FOCUSED_OUTLINE_CACHE.clear();
     }
 
     public static void render(RenderLevelStageEvent event) {
-        if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES) {
-            return;
-        }
+        if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES) return;
         Minecraft minecraft = Minecraft.getInstance();
         if (!BuilderClientServices.isHoldingRealmwright(minecraft) || minecraft.level == null) {
             SECTION_CACHE.clear();
+            FOCUSED_OUTLINE_CACHE.clear();
             return;
         }
+
         BuilderClientEvents.updateControlTargetForRender(minecraft);
         BuilderPreviewState.get().updateHoveredTarget(minecraft, event.getPartialTick(),
                 Math.max(1, BuilderClientServices.snapshot().reach()));
         BuilderPreviewState.Snapshot snapshot = BuilderPreviewState.get().snapshot();
         if (snapshot != null && !minecraft.level.dimension().equals(snapshot.dimension())) {
             SECTION_CACHE.clear();
+            FOCUSED_OUTLINE_CACHE.clear();
             snapshot = null;
         }
         BuilderPreviewState.Candidate candidate = BuilderPreviewState.get().controlCandidate();
-        if (candidate != null && !minecraft.level.dimension().equals(candidate.dimension())) candidate = null;
-        if (snapshot == null && candidate == null) return;
+        if (candidate != null && !minecraft.level.dimension().equals(candidate.dimension())) {
+            candidate = null;
+        }
+        if (snapshot == null && candidate == null
+                && BuilderAnchorPreviewTracker.positions(minecraft.level).isEmpty()) return;
 
         if (snapshot != null) SECTION_CACHE.advance(snapshot, CELLS_PREPARED_PER_FRAME);
         Vec3 camera = event.getCamera().getPosition();
+        int previewDistance = previewDistance(minecraft);
+        double previewDistanceSqr = (double) previewDistance * previewDistance;
         List<BuilderPreviewSectionMeshCache.SectionMesh> visibleSections = snapshot == null
-                ? List.of() : SECTION_CACHE.visibleSections(event.getFrustum(), camera);
-        SECTION_CACHE.prepareVisibleSections(visibleSections, SECTION_UPLOADS_PER_FRAME);
+                ? List.of()
+                : SECTION_CACHE.visibleSections(event.getFrustum(), camera, previewDistanceSqr);
+        SECTION_CACHE.prepareVisibleSections(minecraft, visibleSections, camera,
+                (double) FULL_MODEL_DISTANCE * FULL_MODEL_DISTANCE, SECTION_UPLOADS_PER_FRAME,
+                System.nanoTime() + SECTION_UPLOAD_BUDGET_NANOS);
+        BuilderPreviewState.Focus focus = BuilderPreviewState.get().focus();
+        BuilderPreviewState.MissingGroup focusedMissingGroup = focus != null
+                && focus.kind() == BuilderPreviewState.FocusKind.MISSING
+                ? focus.missingGroup() : null;
+        FOCUSED_OUTLINE_CACHE.synchronize(focusedMissingGroup);
+        FOCUSED_OUTLINE_CACHE.prepare(event.getFrustum(), camera, previewDistanceSqr);
 
         PoseStack poseStack = event.getPoseStack();
         poseStack.pushPose();
         poseStack.translate(-camera.x, -camera.y, -camera.z);
-        RenderSystem.enableBlend();
-        RenderSystem.defaultBlendFunc();
-        RenderSystem.depthMask(false);
         try {
-            if (snapshot != null) {
-                GhostBudget ghostBudget = new GhostBudget(System.nanoTime() + GHOST_RENDER_BUDGET_NANOS,
-                        MAX_GHOSTS_PER_FRAME);
-                renderGhosts(minecraft, poseStack, visibleSections,
-                        BuilderPreviewState.Kind.MISSING, 0.45F, camera, ghostBudget);
-                renderGhosts(minecraft, poseStack, visibleSections,
-                        BuilderPreviewState.Kind.BLUEPRINT, 0.35F, camera, ghostBudget);
-            }
-            renderLines(minecraft, poseStack, event, snapshot, candidate, visibleSections);
+            drawCachedSections(poseStack, event, visibleSections,
+                    BuilderPreviewRenderTypes.ghostModel(),
+                    BuilderPreviewSectionMeshCache.SectionMesh::ghostBuffers, true, 1.0F);
+            BuilderPreviewRenderTypes.updateWaveUniforms();
+            drawCachedSections(poseStack, event, visibleSections,
+                    BuilderPreviewRenderTypes.projectionWave(),
+                    BuilderPreviewSectionMeshCache.SectionMesh::waveBuffers, true, 1.0F);
+
+            // Draw the faint pass only where world geometry occludes the frame. Keeping it
+            // off visible pixels avoids two coplanar outline passes under temporal shaders.
+            drawCachedSections(poseStack, event, visibleSections,
+                    BuilderPreviewRenderTypes.outlineXray(),
+                    section -> section.outlineBuffer() == null
+                            ? List.of() : List.of(section.outlineBuffer()), false, 0.16F);
+            drawCachedSections(poseStack, event, visibleSections,
+                    BuilderPreviewRenderTypes.outline(),
+                    section -> section.outlineBuffer() == null
+                            ? List.of() : List.of(section.outlineBuffer()), false, 1.0F);
+
+            renderDynamicOutlines(minecraft, poseStack, snapshot, candidate,
+                    camera, previewDistanceSqr, BuilderPreviewRenderTypes.outlineXray(), 0.16F);
+            renderDynamicOutlines(minecraft, poseStack, snapshot, candidate,
+                    camera, previewDistanceSqr, BuilderPreviewRenderTypes.outline(), 1.0F);
+            FOCUSED_OUTLINE_CACHE.draw(poseStack, event.getProjectionMatrix(),
+                    BuilderPreviewRenderTypes.outlineXray(), 0.16F);
+            FOCUSED_OUTLINE_CACHE.draw(poseStack, event.getProjectionMatrix(),
+                    BuilderPreviewRenderTypes.outline(), 1.0F);
         } finally {
             RenderSystem.setShaderColor(1.0F, 1.0F, 1.0F, 1.0F);
-            RenderSystem.depthMask(true);
-            RenderSystem.disableBlend();
+            VertexBuffer.unbind();
             poseStack.popPose();
         }
     }
 
-    private static void renderGhosts(Minecraft minecraft, PoseStack poseStack,
-                                     List<BuilderPreviewSectionMeshCache.SectionMesh> visibleSections,
-                                     BuilderPreviewState.Kind kind, float alpha, Vec3 camera,
-                                     GhostBudget budget) {
-        MultiBufferSource.BufferSource buffers = minecraft.renderBuffers().bufferSource();
-        RenderSystem.setShaderColor(kind.red(), kind.green(), kind.blue(), alpha);
-        int rendered = 0;
-        outer:
-        for (BuilderPreviewSectionMeshCache.SectionMesh section : visibleSections) {
-            if (budget.exhausted() || rendered >= MAX_GHOSTS_PER_KIND) break;
-            if (section.closestDistanceToSqr(camera) > MAX_GHOST_DISTANCE_SQR) continue;
-            for (BuilderPreviewState.Cell cell : section.ghosts(kind)) {
-                if (cell.state().isAir()) continue;
-                BlockPos pos = cell.pos();
-                double dx = pos.getX() + 0.5D - camera.x;
-                double dy = pos.getY() + 0.5D - camera.y;
-                double dz = pos.getZ() + 0.5D - camera.z;
-                if (dx * dx + dy * dy + dz * dz > MAX_GHOST_DISTANCE_SQR) continue;
-                if (rendered >= MAX_GHOSTS_PER_KIND || !budget.tryConsume()) break outer;
-                poseStack.pushPose();
-                poseStack.translate(pos.getX(), pos.getY(), pos.getZ());
-                minecraft.getBlockRenderer().renderSingleBlock(cell.state(), poseStack, buffers,
-                        LightTexture.FULL_BRIGHT, OverlayTexture.NO_OVERLAY, ModelData.EMPTY,
-                        RenderType.translucent());
-                poseStack.popPose();
-                rendered++;
-            }
-        }
-        buffers.endBatch(RenderType.translucent());
-        RenderSystem.setShaderColor(1.0F, 1.0F, 1.0F, 1.0F);
-    }
-
-    private static void renderLines(Minecraft minecraft, PoseStack poseStack,
-                                    RenderLevelStageEvent event,
-                                    @Nullable BuilderPreviewState.Snapshot snapshot,
-                                    @Nullable BuilderPreviewState.Candidate candidate,
-                                    List<BuilderPreviewSectionMeshCache.SectionMesh> visibleSections) {
-        renderCachedOutlines(poseStack, event, visibleSections);
-
-        MultiBufferSource.BufferSource buffers = minecraft.renderBuffers().bufferSource();
-        VertexConsumer lines = buffers.getBuffer(RenderType.lines());
-        BuilderPreviewState.Selection selection = snapshot == null ? null : snapshot.selection();
-        if (selection != null && selection.active()) {
-            if (selection.first() != null
-                    && event.getFrustum().isVisible(new AABB(selection.first()).inflate(0.006D))) {
-                renderSelectionBox(poseStack, lines, selection.first(), 0.18F, 0.95F, 0.35F);
-            }
-            if (selection.second() != null
-                    && event.getFrustum().isVisible(new AABB(selection.second()).inflate(0.006D))) {
-                renderSelectionBox(poseStack, lines, selection.second(), 0.96F, 0.20F, 0.20F);
-            }
-            AABB bounds = selection.bounds();
-            if (bounds != null && event.getFrustum().isVisible(bounds)) {
-                LevelRenderer.renderLineBox(poseStack, lines, bounds.inflate(0.004D),
-                        0.20F, 0.55F, 1.00F, 1.00F);
-                if (BuilderPreviewState.get().isSelectionBoundaryHovered()) {
-                    renderEmphasizedBounds(poseStack, lines, bounds,
-                            BuilderPreviewState.Kind.BLUEPRINT);
-                }
-            }
-        }
-        AABB blueprintBounds = BuilderPreviewState.get().blueprintBounds();
-        if (blueprintBounds != null && event.getFrustum().isVisible(blueprintBounds.inflate(0.008D))) {
-            LevelRenderer.renderLineBox(poseStack, lines, blueprintBounds.inflate(0.004D),
-                    BuilderPreviewState.Kind.BLUEPRINT.red(),
-                    BuilderPreviewState.Kind.BLUEPRINT.green(),
-                    BuilderPreviewState.Kind.BLUEPRINT.blue(), 1.0F);
-            if (BuilderPreviewState.get().isBlueprintBoundaryHovered()) {
-                renderEmphasizedBounds(poseStack, lines, blueprintBounds,
-                        BuilderPreviewState.Kind.BLUEPRINT);
-            }
-        }
-        if (candidate != null
-                && event.getFrustum().isVisible(new AABB(candidate.pos()).inflate(0.008D))) {
-            renderSelectionBox(poseStack, lines, candidate.pos(), 0.20F, 0.55F, 1.00F);
-        }
-        BuilderPreviewState.Cell hovered = BuilderPreviewState.get().hoveredTarget();
-        if (hovered != null && event.getFrustum().isVisible(hovered.bounds().inflate(0.016D))) {
-            renderEmphasizedBox(poseStack, lines, hovered);
-        }
-        buffers.endBatch(RenderType.lines());
-    }
-
-    /** Draws each stable section outline with one persistent GPU buffer call. */
-    private static void renderCachedOutlines(PoseStack poseStack, RenderLevelStageEvent event,
-                                             List<BuilderPreviewSectionMeshCache.SectionMesh> sections) {
-        ShaderInstance shader = GameRenderer.getRendertypeLinesShader();
-        if (shader == null || sections.isEmpty()) return;
-        RenderType lines = RenderType.lines();
-        lines.setupRenderState();
+    private static void drawCachedSections(PoseStack poseStack, RenderLevelStageEvent event,
+                                           List<BuilderPreviewSectionMeshCache.SectionMesh> sections,
+                                           RenderType renderType,
+                                           Function<BuilderPreviewSectionMeshCache.SectionMesh,
+                                                   List<VertexBuffer>> bufferGetter,
+                                           boolean farToNear, float alpha) {
+        if (sections.isEmpty()) return;
+        renderType.setupRenderState();
+        RenderSystem.setShaderColor(1.0F, 1.0F, 1.0F, alpha);
         try {
-            for (BuilderPreviewSectionMeshCache.SectionMesh section : sections) {
-                VertexBuffer buffer = section.outlineBuffer();
-                if (buffer == null || buffer.isInvalid()) continue;
+            ShaderInstance shader = RenderSystem.getShader();
+            if (shader == null) return;
+            int start = farToNear ? sections.size() - 1 : 0;
+            int end = farToNear ? -1 : sections.size();
+            int step = farToNear ? -1 : 1;
+            for (int index = start; index != end; index += step) {
+                BuilderPreviewSectionMeshCache.SectionMesh section = sections.get(index);
                 poseStack.pushPose();
                 poseStack.translate(section.originX(), section.originY(), section.originZ());
-                buffer.bind();
-                buffer.drawWithShader(poseStack.last().pose(), event.getProjectionMatrix(), shader);
+                for (VertexBuffer buffer : bufferGetter.apply(section)) {
+                    if (buffer == null || buffer.isInvalid()) continue;
+                    buffer.bind();
+                    buffer.drawWithShader(poseStack.last().pose(), event.getProjectionMatrix(), shader);
+                }
                 poseStack.popPose();
             }
         } finally {
             VertexBuffer.unbind();
-            lines.clearRenderState();
+            RenderSystem.setShaderColor(1.0F, 1.0F, 1.0F, 1.0F);
+            renderType.clearRenderState();
         }
     }
 
-    private static void renderSelectionBox(PoseStack poseStack, VertexConsumer lines, BlockPos pos,
-                                           float red, float green, float blue) {
-        LevelRenderer.renderLineBox(poseStack, lines, new AABB(pos).inflate(0.006D),
-                red, green, blue, 1.0F);
+    private static void renderDynamicOutlines(Minecraft minecraft, PoseStack poseStack,
+                                              @Nullable BuilderPreviewState.Snapshot snapshot,
+                                              @Nullable BuilderPreviewState.Candidate candidate,
+                                              Vec3 camera, double maximumDistanceSqr,
+                                              RenderType renderType, float alphaScale) {
+        MultiBufferSource.BufferSource buffers = minecraft.renderBuffers().bufferSource();
+        VertexConsumer quads = buffers.getBuffer(renderType);
+        PoseStack.Pose pose = poseStack.last();
+
+        for (BlockPos anchor : BuilderAnchorPreviewTracker.positions(minecraft.level)) {
+            AABB bounds = new AABB(anchor).inflate(0.008D);
+            if (withinDistance(bounds, camera, maximumDistanceSqr)) {
+                BuilderPreviewGeometry.emitBox(pose, quads, bounds,
+                        BuilderPreviewState.Kind.ANCHOR, NORMAL_OUTLINE_WIDTH,
+                        alphaScale, false);
+            }
+        }
+
+        BuilderPreviewState.Selection selection = snapshot == null ? null : snapshot.selection();
+        if (selection != null && selection.active()) {
+            if (selection.first() != null) {
+                AABB bounds = new AABB(selection.first()).inflate(0.006D);
+                if (withinDistance(bounds, camera, maximumDistanceSqr)) {
+                    BuilderPreviewGeometry.emitBox(pose, quads, bounds,
+                            BuilderPreviewState.Kind.BUILD, NORMAL_OUTLINE_WIDTH,
+                            alphaScale, false);
+                }
+            }
+            if (selection.second() != null) {
+                AABB bounds = new AABB(selection.second()).inflate(0.006D);
+                if (withinDistance(bounds, camera, maximumDistanceSqr)) {
+                    BuilderPreviewGeometry.emitBox(pose, quads, bounds,
+                            BuilderPreviewState.Kind.DEMOLISH, NORMAL_OUTLINE_WIDTH,
+                            alphaScale, false);
+                }
+            }
+            AABB bounds = selection.bounds();
+            if (bounds != null && withinDistance(bounds, camera, maximumDistanceSqr)) {
+                BuilderPreviewGeometry.emitBox(pose, quads, bounds.inflate(0.004D),
+                        BuilderPreviewState.Kind.BLUEPRINT, NORMAL_OUTLINE_WIDTH,
+                        alphaScale, false);
+            }
+        }
+
+        AABB blueprintBounds = BuilderPreviewState.get().blueprintBounds();
+        if (blueprintBounds != null && withinDistance(blueprintBounds, camera, maximumDistanceSqr)) {
+            BuilderPreviewGeometry.emitBox(pose, quads, blueprintBounds.inflate(0.004D),
+                    BuilderPreviewState.Kind.BLUEPRINT, NORMAL_OUTLINE_WIDTH,
+                    alphaScale, false);
+        }
+        if (candidate != null) {
+            AABB bounds = new AABB(candidate.pos()).inflate(0.006D);
+            if (withinDistance(bounds, camera, maximumDistanceSqr)) {
+                BuilderPreviewGeometry.emitBox(pose, quads, bounds,
+                        BuilderPreviewState.Kind.BLUEPRINT, NORMAL_OUTLINE_WIDTH,
+                        alphaScale, false);
+            }
+        }
+
+        BuilderPreviewState.Focus focus = BuilderPreviewState.get().focus();
+        boolean cachedMissingGroup = focus != null
+                && focus.kind() == BuilderPreviewState.FocusKind.MISSING
+                && focus.missingGroup() != null;
+        if (focus != null && !cachedMissingGroup
+                && withinDistance(focus.bounds(), camera, maximumDistanceSqr)) {
+            BuilderPreviewState.Kind color = focus.kind() == BuilderPreviewState.FocusKind.MISSING
+                    ? BuilderPreviewState.Kind.MISSING : BuilderPreviewState.Kind.BLUEPRINT;
+            BuilderPreviewGeometry.emitBox(pose, quads, focus.bounds(),
+                    color, FOCUSED_OUTLINE_WIDTH, alphaScale, false);
+        }
+        buffers.endBatch(renderType);
     }
 
-    /** Multiple close shells make the crosshair-selected virtual frame visibly heavier. */
-    private static void renderEmphasizedBox(PoseStack poseStack, VertexConsumer lines,
-                                            BuilderPreviewState.Cell cell) {
-        renderEmphasizedBounds(poseStack, lines, cell.bounds(), cell.kind());
+    private static boolean withinDistance(AABB bounds, Vec3 point, double maximumDistanceSqr) {
+        double x = Mth.clamp(point.x, bounds.minX, bounds.maxX) - point.x;
+        double y = Mth.clamp(point.y, bounds.minY, bounds.maxY) - point.y;
+        double z = Mth.clamp(point.z, bounds.minZ, bounds.maxZ) - point.z;
+        return x * x + y * y + z * z <= maximumDistanceSqr;
     }
 
-    private static void renderEmphasizedBounds(PoseStack poseStack, VertexConsumer lines,
-                                               AABB box, BuilderPreviewState.Kind kind) {
-        for (double inflation : new double[] { 0.004D, 0.009D, 0.014D }) {
-            LevelRenderer.renderLineBox(poseStack, lines, box.inflate(inflation),
-                    kind.red(), kind.green(), kind.blue(), 1.0F);
-        }
+    private static int previewDistance(Minecraft minecraft) {
+        int renderSections = minecraft.options.getEffectiveRenderDistance() + EXTRA_RENDER_SECTIONS;
+        return Mth.clamp(renderSections * 16,
+                MINIMUM_PREVIEW_DISTANCE, MAXIMUM_PREVIEW_DISTANCE);
     }
 
-    private static final class GhostBudget {
-        private final long deadlineNanos;
-        private int remaining;
-
-        private GhostBudget(long deadlineNanos, int remaining) {
-            this.deadlineNanos = deadlineNanos;
-            this.remaining = remaining;
-        }
-
-        private boolean tryConsume() {
-            if (exhausted()) return false;
-            remaining--;
-            return true;
-        }
-
-        private boolean exhausted() {
-            return remaining <= 0 || System.nanoTime() >= deadlineNanos;
-        }
+    static double focusedOutlineWidth() {
+        return FOCUSED_OUTLINE_WIDTH;
     }
 }

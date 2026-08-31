@@ -107,12 +107,10 @@ public final class BlueprintServerService {
                     BuilderConfig.MAX_BLUEPRINT_COMPRESSED_BYTES.get());
             BlueprintServerCache.Entry entry = cache.put(player, blueprint, compressed, server.getTickCount());
             sendDownload(player, requestId, entry);
-            if (finishSelection) {
-                selections.remove(player.getUUID(), selection);
-            } else if (selection.second() == null) {
-                // The immediate blocks-only capture feeds the placement preview.  Preserve the now fully
-                // validated pair briefly so the save dialog can request FULL data without rechecking the
-                // distant first corner, then remove it when that final capture succeeds.
+            if (selection.second() == null || finishSelection) {
+                // Keep the validated pair while its source cuboid remains visible on the client. This lets
+                // SAVE be used repeatedly for Save As / replace without asking the player to select both
+                // corners again. Every successful capture refreshes the bounded server-side expiry.
                 selections.replace(player.getUUID(), selection,
                         selection.complete(second, selectionExpiry(player)));
             }

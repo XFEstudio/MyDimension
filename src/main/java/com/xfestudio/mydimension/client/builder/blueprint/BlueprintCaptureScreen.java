@@ -17,7 +17,10 @@ public final class BlueprintCaptureScreen extends Screen {
     private String status = "";
 
     public BlueprintCaptureScreen(Screen parent) {
-        super(Component.translatable("screen.mydimension.realmwright.blueprint.capture"));
+        // This dialog is entered from the wheel's SAVE action. Although the server performs
+        // a fresh capture after the player chooses the NBT policy, the user-facing operation
+        // is saving the already selected cuboid, not selecting/copying it again.
+        super(Component.translatable("screen.mydimension.realmwright.blueprint.save"));
         this.parent = parent;
     }
 
@@ -34,7 +37,7 @@ public final class BlueprintCaptureScreen extends Screen {
             mode = mode == BlueprintSaveMode.BLOCKS_ONLY ? BlueprintSaveMode.FULL : BlueprintSaveMode.BLOCKS_ONLY;
             button.setMessage(modeLabel());
         }).bounds(left, top + 55, 190, 20).build());
-        addRenderableWidget(Button.builder(Component.translatable("screen.mydimension.realmwright.blueprint.capture"),
+        addRenderableWidget(Button.builder(Component.translatable("screen.mydimension.realmwright.blueprint.save"),
                 button -> submit()).bounds(left + 198, top + 55, 102, 20).build());
         addRenderableWidget(Button.builder(Component.translatable("gui.cancel"), button -> onClose())
                 .bounds(left + 198, top + 80, 102, 20).build());
