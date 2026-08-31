@@ -1,0 +1,29 @@
+{
+  "type": "forge:conditional",
+  "recipes": [
+    {
+      "conditions": [
+        { "type": "mydimension:builder_enabled" }
+      ],
+      "recipe": {
+        "type": "minecraft:crafting_shaped",
+        "category": "equipment",
+        "pattern": [
+          "ENE",
+          "NRN",
+          "CBC"
+        ],
+        "key": {
+          "E": { "item": "minecraft:echo_shard" },
+          "N": { "item": "minecraft:netherite_ingot" },
+          "R": { "item": "mydimension:rift" },
+          "C": { "item": "minecraft:crying_obsidian" },
+          "B": { "item": "minecraft:blaze_rod" }
+        },
+        "result": {
+          "item": "mydimension:realmwright_scepter"
+        }
+      }
+    }
+  ]
+}

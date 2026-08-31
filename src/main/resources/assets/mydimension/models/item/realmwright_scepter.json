@@ -1,0 +1,9 @@
+{
+  "parent": "mydimension:item/realmwright_scepter_build",
+  "overrides": [
+    {
+      "predicate": { "mydimension:builder_mode": 1.0 },
+      "model": "mydimension:item/realmwright_scepter_demolish"
+    }
+  ]
+}

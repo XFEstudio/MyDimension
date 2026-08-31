@@ -1,6 +1,7 @@
 package com.xfestudio.mydimension.registry;
 
 import com.xfestudio.mydimension.MyDimension;
+import com.xfestudio.mydimension.builder.anchor.ResonantSupplyAnchorBlock;
 import com.xfestudio.mydimension.world.block.MindPortalBlock;
 import com.xfestudio.mydimension.world.block.MindPortalFrameBlock;
 import net.minecraft.world.level.block.Block;
@@ -27,6 +28,12 @@ public final class ModBlocks {
                     .strength(-1.0F, 3600000.0F)
                     .lightLevel(state -> 12)
                     .sound(SoundType.GLASS)));
+
+    public static final RegistryObject<Block> RESONANT_SUPPLY_ANCHOR = BLOCKS.register(
+            "resonant_supply_anchor",
+            () -> new ResonantSupplyAnchorBlock(BlockBehaviour.Properties.copy(Blocks.LODESTONE)
+                    .noOcclusion()
+                    .strength(5.0F, 1200.0F)));
 
     private ModBlocks() {
     }

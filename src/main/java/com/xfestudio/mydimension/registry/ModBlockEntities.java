@@ -1,6 +1,7 @@
 package com.xfestudio.mydimension.registry;
 
 import com.xfestudio.mydimension.MyDimension;
+import com.xfestudio.mydimension.builder.anchor.ResonantSupplyAnchorBlockEntity;
 import com.xfestudio.mydimension.world.block.entity.MindPortalBlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraftforge.eventbus.api.IEventBus;
@@ -16,6 +17,11 @@ public final class ModBlockEntities {
             "mind_portal",
             () -> BlockEntityType.Builder.of(MindPortalBlockEntity::new, ModBlocks.MIND_PORTAL.get()).build(null)
     );
+
+    public static final RegistryObject<BlockEntityType<ResonantSupplyAnchorBlockEntity>> RESONANT_SUPPLY_ANCHOR =
+            BLOCK_ENTITIES.register("resonant_supply_anchor",
+                    () -> BlockEntityType.Builder.of(ResonantSupplyAnchorBlockEntity::new,
+                            ModBlocks.RESONANT_SUPPLY_ANCHOR.get()).build(null));
 
     private ModBlockEntities() {
     }

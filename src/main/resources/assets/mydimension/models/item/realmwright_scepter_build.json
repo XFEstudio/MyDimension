@@ -1,0 +1,6 @@
+{
+  "parent": "mydimension:item/realmwright_scepter_base",
+  "textures": {
+    "effect": "mydimension:item/realmwright_effect_build"
+  }
+}
