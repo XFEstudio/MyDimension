@@ -240,8 +240,6 @@ public final class BlueprintServerService {
                 || !queued.scepterId().equals(RealmwrightData.id(scepter))
                 || !queued.dimension().equals(player.level().dimension())
                 || PendingBuildData.get(server).get(player.getUUID()) != null
-                || com.xfestudio.mydimension.builder.BuilderSurfaceTaskManager.get(server)
-                .hasActive(player.getUUID())
                 || BlueprintTaskManager.get(server).hasActive(player.getUUID())) {
             return Optional.empty();
         }
@@ -400,9 +398,7 @@ public final class BlueprintServerService {
 
     private boolean hasWorkConflict(ServerPlayer player) {
         if (PendingBuildData.get(server).get(player.getUUID()) != null
-                || BlueprintTaskManager.get(server).hasActive(player.getUUID())
-                || com.xfestudio.mydimension.builder.BuilderSurfaceTaskManager.get(server)
-                .hasActive(player.getUUID())) {
+                || BlueprintTaskManager.get(server).hasActive(player.getUUID())) {
             return true;
         }
         Queue<QueuedPlacement> queued = placementQueues.get(player.getUUID());

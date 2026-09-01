@@ -4,7 +4,6 @@ import com.xfestudio.mydimension.builder.BuilderHistoryService;
 import com.xfestudio.mydimension.builder.BuilderMode;
 import com.xfestudio.mydimension.builder.BuilderNetworkBridge;
 import com.xfestudio.mydimension.builder.BuilderOperationManager;
-import com.xfestudio.mydimension.builder.BuilderSurfaceTaskManager;
 import com.xfestudio.mydimension.builder.BuilderRuntime;
 import com.xfestudio.mydimension.builder.BuilderReachValidator;
 import com.xfestudio.mydimension.builder.PendingBuildData;
@@ -80,6 +79,11 @@ public final class BuilderCommandPacket {
                 buildLimit, demolishLimit, null, null, null);
     }
 
+    public static BuilderCommandPacket setHistoryRecording(boolean enabled) {
+        return new BuilderCommandPacket(Action.SET_HISTORY_RECORDING, null, null,
+                enabled ? 1 : 0, 0, null, null, null);
+    }
+
     public static BuilderCommandPacket use(Target target) {
         return new BuilderCommandPacket(Action.USE, null, null, 0, 0, null, target, null);
     }
@@ -136,6 +140,7 @@ public final class BuilderCommandPacket {
                 buffer.writeVarInt(packet.first);
                 buffer.writeVarInt(packet.second);
             }
+            case SET_HISTORY_RECORDING -> buffer.writeBoolean(packet.first != 0);
             case USE -> packet.target.write(buffer);
             case RESUME, CANCEL -> writeOptionalUuid(buffer, packet.id);
             case UNBIND_ANCHOR -> buffer.writeUUID(packet.id);
@@ -164,6 +169,7 @@ public final class BuilderCommandPacket {
             case SET_MODE -> setMode(buffer.readEnum(BuilderMode.class));
             case SET_MATCH -> setMatch(buffer.readEnum(SurfaceMatchMode.class));
             case SET_LIMITS -> setLimits(buffer.readVarInt(), buffer.readVarInt());
+            case SET_HISTORY_RECORDING -> setHistoryRecording(buffer.readBoolean());
             case USE -> use(Target.read(buffer));
             case RESUME -> resume(readOptionalUuid(buffer));
             case CANCEL -> cancel(readOptionalUuid(buffer));
@@ -223,16 +229,15 @@ public final class BuilderCommandPacket {
                 RealmwrightData.setDemolishLimit(scepter, packet.second,
                         BuilderRuntime.settings().maxDemolishLimit());
             }
+            case SET_HISTORY_RECORDING -> RealmwrightData.setRecordsHistory(scepter, packet.first != 0);
             case USE -> { }
             case RESUME -> resume(player, scepter, packet.id);
             case CANCEL -> cancel(player, scepter, packet.id);
             case CANCEL_BLUEPRINT -> cancelBlueprint(player, scepter);
             case UNDO -> {
-                BuilderSurfaceTaskManager.get(player.getServer()).cancel(player, scepter);
                 BuilderHistoryService.undo(player, scepter);
             }
             case REDO -> {
-                BuilderSurfaceTaskManager.get(player.getServer()).cancel(player, scepter);
                 BuilderHistoryService.redo(player, scepter);
             }
             case UNBIND_ANCHOR -> AnchorBindings.unbind(scepter, packet.id);
@@ -303,11 +308,9 @@ public final class BuilderCommandPacket {
     private static void cancel(ServerPlayer player, ItemStack scepter, @Nullable UUID requestedJob) {
         com.xfestudio.mydimension.builder.blueprint.BlueprintTaskManager manager =
                 com.xfestudio.mydimension.builder.blueprint.BlueprintTaskManager.get(player.getServer());
-        BuilderSurfaceTaskManager surfaceManager = BuilderSurfaceTaskManager.get(player.getServer());
         if (requestedJob == null) {
             BlueprintServerService.get(player.getServer()).cancelQueuedPlacement(player);
             manager.cancel(player, scepter);
-            surfaceManager.cancel(player, scepter);
             PendingBuildData.Task pending = PendingBuildData.get(player.getServer()).get(player.getUUID());
             if (pending != null && pending.scepterId().equals(RealmwrightData.id(scepter))) {
                 BuilderOperationManager.cancelPending(player, scepter);
@@ -315,11 +318,6 @@ public final class BuilderCommandPacket {
             return;
         }
         com.xfestudio.mydimension.builder.blueprint.BlueprintTaskManager.Status running = manager.status(player);
-        BuilderSurfaceTaskManager.Status runningSurface = surfaceManager.status(player);
-        if (requestedJob.equals(runningSurface.transactionId())) {
-            surfaceManager.cancel(player, scepter, requestedJob);
-            return;
-        }
         if (requestedJob != null && requestedJob.equals(running.transactionId())) {
             manager.cancel(player, scepter);
             return;
@@ -393,6 +391,7 @@ public final class BuilderCommandPacket {
         SET_MODE(false),
         SET_MATCH(false),
         SET_LIMITS(false),
+        SET_HISTORY_RECORDING(false),
         USE(true),
         RESUME(true),
         CANCEL(false),

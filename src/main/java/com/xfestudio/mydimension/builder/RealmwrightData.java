@@ -17,8 +17,9 @@ public final class RealmwrightData {
     private static final String MATCH = "Match";
     private static final String BUILD_LIMIT = "BuildLimit";
     private static final String DEMOLISH_LIMIT = "DemolishLimit";
+    private static final String RECORD_HISTORY = "RecordHistory";
     private static final String ANCHORS = "Anchors";
-    private static final int DATA_VERSION = 1;
+    private static final int DATA_VERSION = 2;
 
     public static final int DEFAULT_BUILD_LIMIT = 256;
     public static final int DEFAULT_DEMOLISH_LIMIT = 64;
@@ -85,6 +86,26 @@ public final class RealmwrightData {
     public static void setDemolishLimit(ItemStack stack, int value, int serverMaximum) {
         CompoundTag tag = root(stack);
         tag.putInt(DEMOLISH_LIMIT, clamp(value, 1, serverMaximum));
+        writeRoot(stack, tag);
+    }
+
+    /**
+     * Whether new operations performed by this individual scepter should retain
+     * undo data.  Absence deliberately means false so existing scepters receive
+     * the low-overhead behaviour after upgrading.
+     */
+    public static boolean recordsHistory(ItemStack stack) {
+        return recordsHistory(readRoot(stack));
+    }
+
+    static boolean recordsHistory(CompoundTag tag) {
+        return tag != null && tag.contains(RECORD_HISTORY, Tag.TAG_BYTE)
+                && tag.getBoolean(RECORD_HISTORY);
+    }
+
+    public static void setRecordsHistory(ItemStack stack, boolean value) {
+        CompoundTag tag = root(stack);
+        tag.putBoolean(RECORD_HISTORY, value);
         writeRoot(stack, tag);
     }
 

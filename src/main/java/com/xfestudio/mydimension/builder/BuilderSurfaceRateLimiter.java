@@ -17,6 +17,7 @@ import java.util.WeakHashMap;
  * merely move the lag spike into later ticks.</p>
  */
 public final class BuilderSurfaceRateLimiter {
+    private static final int DEMOLISH_COST_UNITS = 4;
     private static final Map<MinecraftServer, PlayerWindows> WINDOWS = new WeakHashMap<>();
 
     private BuilderSurfaceRateLimiter() {
@@ -52,7 +53,7 @@ public final class BuilderSurfaceRateLimiter {
     }
 
     static int delayTicks(BuilderMode mode, int candidateCount, int editsPerTick) {
-        long candidates = Math.max(1L, BuilderSurfaceTaskManager.budgetCost(mode, candidateCount));
+        long candidates = Math.max(1L, budgetCost(mode, candidateCount));
         long budget = Math.max(1L, editsPerTick);
         return (int) Math.min(Integer.MAX_VALUE, (candidates + budget - 1L) / budget);
     }
@@ -78,6 +79,12 @@ public final class BuilderSurfaceRateLimiter {
         long nextEligibleTick() {
             return nextEligibleTick;
         }
+    }
+
+    static int budgetCost(BuilderMode mode, int blocks) {
+        int count = Math.max(0, blocks);
+        if (mode != BuilderMode.DEMOLISH) return count;
+        return (int) Math.min(Integer.MAX_VALUE, (long) count * DEMOLISH_COST_UNITS);
     }
 
     /**

@@ -12,6 +12,7 @@ public record BuilderClientSnapshot(
         boolean enabled,
         BuilderMode mode,
         SurfaceMatchMode surfaceMatch,
+        boolean historyRecording,
         int buildLimit,
         int demolishLimit,
         int maximumBuildLimit,
@@ -28,7 +29,7 @@ public record BuilderClientSnapshot(
         UUID selectedBlueprintId
 ) {
     public static final BuilderClientSnapshot EMPTY = new BuilderClientSnapshot(
-            true, BuilderMode.BUILD, SurfaceMatchMode.SAME_BLOCK,
+            true, BuilderMode.BUILD, SurfaceMatchMode.SAME_BLOCK, false,
             256, 64, 4096, 1024, 64, "", null,
             0, 0, false, false, List.of(), List.of(), null
     );

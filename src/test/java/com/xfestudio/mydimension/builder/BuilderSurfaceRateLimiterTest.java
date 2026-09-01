@@ -20,6 +20,7 @@ class BuilderSurfaceRateLimiterTest {
     void sixtyFourDemolitionsReserveFourTicksAtTheWeightedBudget() {
         assertEquals(4, BuilderSurfaceRateLimiter.delayTicks(BuilderMode.DEMOLISH, 64, 64));
         assertEquals(1, BuilderSurfaceRateLimiter.delayTicks(BuilderMode.DEMOLISH, 16, 64));
+        assertEquals(64, BuilderSurfaceRateLimiter.budgetCost(BuilderMode.DEMOLISH, 16));
     }
 
     @Test

@@ -1,8 +1,10 @@
 package com.xfestudio.mydimension.client.builder.blueprint;
 
+import com.xfestudio.mydimension.builder.blueprint.BlueprintData;
 import com.xfestudio.mydimension.builder.blueprint.BlueprintNames;
 import com.xfestudio.mydimension.builder.blueprint.BlueprintSaveMode;
 import com.xfestudio.mydimension.client.builder.BuilderClientNetworkBridge;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
@@ -12,9 +14,14 @@ import net.minecraft.network.chat.Component;
 /** Collects name and NBT policy before the server captures the selected cuboid. */
 public final class BlueprintCaptureScreen extends Screen {
     private final Screen parent;
+    private final ClientBlueprintLibrary library = ClientBlueprintLibrary.get();
     private EditBox name;
     private BlueprintSaveMode mode = BlueprintSaveMode.BLOCKS_ONLY;
     private String status = "";
+    private boolean saving;
+    private Button modeButton;
+    private Button saveButton;
+    private Button cancelButton;
 
     public BlueprintCaptureScreen(Screen parent) {
         // This dialog is entered from the wheel's SAVE action. Although the server performs
@@ -26,32 +33,84 @@ public final class BlueprintCaptureScreen extends Screen {
 
     @Override
     protected void init() {
+        int panelTop = height / 2 - 91;
         int left = width / 2 - 150;
-        int top = height / 2 - 60;
-        name = new EditBox(font, left, top + 24, 300, 22,
+        name = new EditBox(font, left, panelTop + 34, 300, 22,
                 Component.translatable("screen.mydimension.realmwright.blueprint.name"));
         name.setMaxLength(64);
         name.setValue(Component.translatable("screen.mydimension.realmwright.blueprint.default_name").getString());
         addRenderableWidget(name);
-        addRenderableWidget(Button.builder(modeLabel(), button -> {
+
+        // The save policy is one complete row: it is a setting, not a peer of the
+        // primary Save action. Save and Cancel then form the second action row.
+        modeButton = addRenderableWidget(Button.builder(modeLabel(), button -> {
             mode = mode == BlueprintSaveMode.BLOCKS_ONLY ? BlueprintSaveMode.FULL : BlueprintSaveMode.BLOCKS_ONLY;
             button.setMessage(modeLabel());
-        }).bounds(left, top + 55, 190, 20).build());
-        addRenderableWidget(Button.builder(Component.translatable("screen.mydimension.realmwright.blueprint.save"),
-                button -> submit()).bounds(left + 198, top + 55, 102, 20).build());
-        addRenderableWidget(Button.builder(Component.translatable("gui.cancel"), button -> onClose())
-                .bounds(left + 198, top + 80, 102, 20).build());
+        }).bounds(left, panelTop + 65, 300, 22).build());
+        saveButton = addRenderableWidget(Button.builder(
+                Component.translatable("screen.mydimension.realmwright.blueprint.save"),
+                button -> submit()).bounds(left, panelTop + 97, 146, 22).build());
+        cancelButton = addRenderableWidget(Button.builder(
+                Component.translatable("gui.cancel"), button -> onClose())
+                .bounds(left + 154, panelTop + 97, 146, 22).build());
+        updateActiveState();
         setInitialFocus(name);
     }
 
     private void submit() {
+        if (saving) return;
         try {
             String normalized = BlueprintNames.normalize(name.getValue());
-            BuilderClientNetworkBridge.requestCapture(normalized, mode);
-            if (minecraft != null) minecraft.setScreen(parent);
+            saving = true;
+            status = Component.translatable(
+                    "screen.mydimension.realmwright.blueprint.saving").getString();
+            updateActiveState();
+            if (!BuilderClientNetworkBridge.requestCapture(normalized, mode)) {
+                captureFailed(Component.translatable(
+                        "screen.mydimension.realmwright.blueprint.selection_missing").getString());
+            }
         } catch (IllegalArgumentException exception) {
             status = exception.getMessage() == null ? "Invalid blueprint name" : exception.getMessage();
         }
+    }
+
+    /** Receives the one server-authoritative capture and saves it without opening another dialog. */
+    public void acceptCapture(BlueprintData captured) {
+        if (!saving) return;
+        library.saveAsync(captured, ClientBlueprintLibrary.ConflictPolicy.FAIL)
+                .whenComplete((entry, failure) -> Minecraft.getInstance().execute(() -> {
+                    if (failure == null) {
+                        if (minecraft != null && minecraft.screen == this) minecraft.setScreen(parent);
+                        return;
+                    }
+                    Throwable root = rootCause(failure);
+                    if (root instanceof ClientBlueprintLibrary.NameConflictException conflict) {
+                        status = Component.translatable(
+                                "screen.mydimension.realmwright.blueprint.name_conflict",
+                                conflict.existingName()).getString();
+                    } else {
+                        status = root.getMessage() == null
+                                ? root.getClass().getSimpleName() : root.getMessage();
+                    }
+                    saving = false;
+                    updateActiveState();
+                }));
+    }
+
+    /** Keeps transfer/capture failures visible in this same save dialog. */
+    public void captureFailed(String message) {
+        status = message == null || message.isBlank()
+                ? Component.translatable("screen.mydimension.realmwright.blueprint.save_failed").getString()
+                : message;
+        saving = false;
+        updateActiveState();
+    }
+
+    private void updateActiveState() {
+        if (name != null) name.setEditable(!saving);
+        if (modeButton != null) modeButton.active = !saving;
+        if (saveButton != null) saveButton.active = !saving;
+        if (cancelButton != null) cancelButton.active = !saving;
     }
 
     private Component modeLabel() {
@@ -64,16 +123,33 @@ public final class BlueprintCaptureScreen extends Screen {
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         renderBackground(graphics);
         int left = width / 2 - 164;
-        int top = height / 2 - 76;
-        graphics.fill(left, top, left + 328, top + 150, 0xEE121822);
-        graphics.renderOutline(left, top, 328, 150, 0xFF557A9F);
+        int top = height / 2 - 91;
+        graphics.fill(left, top, left + 328, top + 182, 0xEE121822);
+        graphics.renderOutline(left, top, 328, 182, 0xFF557A9F);
         graphics.drawCenteredString(font, title, width / 2, top + 9, 0xFFFFFFFF);
-        graphics.drawString(font, Component.translatable("screen.mydimension.realmwright.blueprint.full_warning"),
-                left + 14, top + 112, 0xFFFFB85C, false);
-        if (!status.isBlank()) graphics.drawCenteredString(font, status, width / 2, top + 132, 0xFFFF6B63);
+        int warningY = top + 127;
+        for (net.minecraft.util.FormattedCharSequence line : font.split(
+                Component.translatable("screen.mydimension.realmwright.blueprint.full_warning"), 300)) {
+            graphics.drawString(font, line, left + 14, warningY, 0xFFFFB85C, false);
+            warningY += font.lineHeight + 1;
+        }
+        if (!status.isBlank()) graphics.drawCenteredString(font,
+                font.plainSubstrByWidth(status, 300), width / 2, top + 165, 0xFFFF6B63);
         super.render(graphics, mouseX, mouseY, partialTick);
     }
 
-    @Override public void onClose() { if (minecraft != null) minecraft.setScreen(parent); }
+    @Override
+    public void onClose() {
+        if (saving) return;
+        BuilderClientNetworkBridge.cancelPendingCapture();
+        if (minecraft != null) minecraft.setScreen(parent);
+    }
+
     @Override public boolean isPauseScreen() { return false; }
+
+    private static Throwable rootCause(Throwable throwable) {
+        Throwable current = throwable;
+        while (current.getCause() != null) current = current.getCause();
+        return current;
+    }
 }

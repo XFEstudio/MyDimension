@@ -2,7 +2,6 @@ package com.xfestudio.mydimension.network.builder;
 
 import com.xfestudio.mydimension.builder.BuilderMode;
 import com.xfestudio.mydimension.builder.BuilderRuntime;
-import com.xfestudio.mydimension.builder.BuilderSurfaceTaskManager;
 import com.xfestudio.mydimension.builder.PendingBuildData;
 import com.xfestudio.mydimension.builder.RealmwrightData;
 import com.xfestudio.mydimension.builder.SurfaceMatchMode;
@@ -27,6 +26,7 @@ import java.util.function.Supplier;
 
 /** Server-owned state consumed by the five-tab Realmwright screen and HUD. */
 public record BuilderSnapshotPacket(boolean enabled, BuilderMode mode, SurfaceMatchMode surfaceMatch,
+                                    boolean historyRecording,
                                     int buildLimit, int demolishLimit,
                                     int maximumBuildLimit, int maximumDemolishLimit,
                                     int reach, String status, @Nullable UUID activeJobId,
@@ -48,7 +48,6 @@ public record BuilderSnapshotPacket(boolean enabled, BuilderMode mode, SurfaceMa
         PendingBuildData.Task pending = PendingBuildData.get(player.getServer()).get(player.getUUID());
         if (pending != null && !pending.scepterId().equals(scepterId)) pending = null;
         BlueprintTaskManager.Status running = BlueprintTaskManager.get(player.getServer()).status(player);
-        BuilderSurfaceTaskManager.Status surface = BuilderSurfaceTaskManager.get(player.getServer()).status(player);
 
         BuilderHistoryData historyData = BuilderHistoryData.get(player.getServer());
         BuilderTransaction undo = historyData.peekUndo(player.getUUID(), scepterId);
@@ -57,30 +56,25 @@ public record BuilderSnapshotPacket(boolean enabled, BuilderMode mode, SurfaceMa
                         Math.min(MAX_HISTORY, settings.undoDepth()))
                 .stream().map(History::from).toList();
 
-        int completed = surface.transactionId() != null ? surface.completed()
-                : running.transactionId() != null ? running.completed()
+        int completed = running.transactionId() != null ? running.completed()
                 : pending == null ? 0 : completedFor(pending, undo);
-        int missing = surface.transactionId() != null ? surface.missing()
-                : running.transactionId() != null ? running.missing()
+        int missing = running.transactionId() != null ? running.missing()
                 : pending == null ? 0 : pending.missing().size();
-        int total = surface.transactionId() != null ? surface.total()
-                : running.transactionId() != null ? running.total() : completed + missing;
-        String status = surface.transactionId() != null
-                ? (surface.mode() == BuilderMode.BUILD ? "Building surface" : "Demolishing surface")
-                : running.transactionId() != null ? "Building blueprint"
+        int total = running.transactionId() != null ? running.total() : completed + missing;
+        String status = running.transactionId() != null ? "Building blueprint"
                 : pending == null ? "" : "Waiting for " + missing + " block(s)";
         return new BuilderSnapshotPacket(
                 settings.enabled(),
                 RealmwrightData.mode(scepter),
                 RealmwrightData.matchMode(scepter),
+                RealmwrightData.recordsHistory(scepter),
                 RealmwrightData.buildLimit(scepter, settings.maxBuildLimit()),
                 RealmwrightData.demolishLimit(scepter, settings.maxDemolishLimit()),
                 settings.maxBuildLimit(),
                 settings.maxDemolishLimit(),
                 Math.max(1, (int) Math.ceil(settings.blockReach())),
                 status,
-                surface.transactionId() != null ? surface.transactionId()
-                        : running.transactionId() != null ? running.transactionId()
+                running.transactionId() != null ? running.transactionId()
                         : pending == null ? null : pending.transactionId(),
                 completed,
                 total,
@@ -134,6 +128,7 @@ public record BuilderSnapshotPacket(boolean enabled, BuilderMode mode, SurfaceMa
         buffer.writeBoolean(packet.enabled);
         buffer.writeEnum(packet.mode);
         buffer.writeEnum(packet.surfaceMatch);
+        buffer.writeBoolean(packet.historyRecording);
         buffer.writeVarInt(packet.buildLimit);
         buffer.writeVarInt(packet.demolishLimit);
         buffer.writeVarInt(packet.maximumBuildLimit);
@@ -172,6 +167,7 @@ public record BuilderSnapshotPacket(boolean enabled, BuilderMode mode, SurfaceMa
         boolean enabled = buffer.readBoolean();
         BuilderMode mode = buffer.readEnum(BuilderMode.class);
         SurfaceMatchMode match = buffer.readEnum(SurfaceMatchMode.class);
+        boolean historyRecording = buffer.readBoolean();
         int buildLimit = buffer.readVarInt();
         int demolishLimit = buffer.readVarInt();
         int maximumBuildLimit = buffer.readVarInt();
@@ -198,7 +194,7 @@ public record BuilderSnapshotPacket(boolean enabled, BuilderMode mode, SurfaceMa
             history.add(new History(buffer.readUUID(), buffer.readUtf(128), buffer.readUtf(128),
                     buffer.readVarInt(), buffer.readLong(), buffer.readEnum(HistoryStatus.class)));
         }
-        return new BuilderSnapshotPacket(enabled, mode, match, buildLimit, demolishLimit,
+        return new BuilderSnapshotPacket(enabled, mode, match, historyRecording, buildLimit, demolishLimit,
                 maximumBuildLimit, maximumDemolishLimit, reach, status, activeJobId,
                 completedBlocks, totalBlocks, canUndo, canRedo, anchors, history);
     }

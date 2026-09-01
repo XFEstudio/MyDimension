@@ -36,6 +36,9 @@ public sealed interface BuilderClientCommand {
     record SetLimits(int buildLimit, int demolishLimit) implements BuilderClientCommand {
     }
 
+    record SetHistoryRecording(boolean enabled) implements BuilderClientCommand {
+    }
+
     record SelectBlueprintPoint(Target target) implements BuilderClientCommand {
     }
 

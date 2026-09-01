@@ -21,7 +21,10 @@ import net.minecraftforge.network.simple.SimpleChannel;
 import java.util.List;
 
 public class ModNetwork {
-    private static final String PROTOCOL_VERSION = "3";
+    // BuilderSnapshotPacket gained the per-scepter history-recording flag and
+    // BuilderCommandPacket gained its matching intent. Older v3 peers would
+    // otherwise decode the remaining fields at the wrong offsets.
+    private static final String PROTOCOL_VERSION = "4";
 
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(MyDimension.MOD_ID, "main"),

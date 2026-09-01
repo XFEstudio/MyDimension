@@ -13,7 +13,6 @@ import com.xfestudio.mydimension.builder.blueprint.BlueprintSaveMode;
 import com.xfestudio.mydimension.builder.blueprint.BlueprintTransform;
 import com.xfestudio.mydimension.builder.blueprint.client.ClientBlueprintTransfers;
 import com.xfestudio.mydimension.client.builder.blueprint.BlueprintCaptureScreen;
-import com.xfestudio.mydimension.client.builder.blueprint.BlueprintSaveScreen;
 import com.xfestudio.mydimension.client.builder.blueprint.ClientBlueprintLibrary;
 import com.xfestudio.mydimension.network.blueprint.BlueprintCaptureRequestPacket;
 import com.xfestudio.mydimension.network.blueprint.BlueprintPlaceRequestPacket;
@@ -75,6 +74,7 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
         UUID selected = selectedBlueprintId;
         if (java.util.Objects.equals(value.selectedBlueprintId(), selected)) return value;
         return new BuilderClientSnapshot(value.enabled(), value.mode(), value.surfaceMatch(),
+                value.historyRecording(),
                 value.buildLimit(), value.demolishLimit(), value.maximumBuildLimit(),
                 value.maximumDemolishLimit(), value.reach(), value.status(), value.activeJobId(),
                 value.completedBlocks(), value.totalBlocks(), value.canUndo(), value.canRedo(),
@@ -97,6 +97,8 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
         } else if (command instanceof BuilderClientCommand.SetLimits value) {
             ModNetwork.CHANNEL.sendToServer(BuilderCommandPacket.setLimits(
                     value.buildLimit(), value.demolishLimit()));
+        } else if (command instanceof BuilderClientCommand.SetHistoryRecording value) {
+            ModNetwork.CHANNEL.sendToServer(BuilderCommandPacket.setHistoryRecording(value.enabled()));
         } else if (command instanceof BuilderClientCommand.UseTarget value) {
             switch (value.kind()) {
                 case AUTO -> ModNetwork.CHANNEL.sendToServer(BuilderCommandPacket.use(target(value.target())));
@@ -151,6 +153,7 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
                         BuilderClientSnapshot.HistoryStatus.valueOf(entry.status().name())))
                 .toList();
         snapshot = new BuilderClientSnapshot(packet.enabled(), packet.mode(), packet.surfaceMatch(),
+                packet.historyRecording(),
                 packet.buildLimit(), packet.demolishLimit(), packet.maximumBuildLimit(),
                 packet.maximumDemolishLimit(), packet.reach(), packet.status(), packet.activeJobId(),
                 packet.completedBlocks(), packet.totalBlocks(), packet.canUndo(), packet.canRedo(),
@@ -230,13 +233,20 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
         }
     }
 
-    public static void requestCapture(String name, BlueprintSaveMode mode) {
+    public static boolean requestCapture(String name, BlueprintSaveMode mode) {
         BuilderPreviewState.Snapshot preview = BuilderPreviewState.get().snapshot();
-        if (preview == null || preview.selection().first() == null || preview.selection().second() == null) return;
+        if (preview == null || preview.selection().first() == null
+                || preview.selection().second() == null || INSTANCE.pendingCapture != null) return false;
         UUID request = UUID.randomUUID();
         INSTANCE.pendingCapture = request;
         ModNetwork.CHANNEL.sendToServer(new BlueprintCaptureRequestPacket(request,
                 preview.selection().first(), preview.selection().second(), mode, name, true));
+        return true;
+    }
+
+    /** Stops routing a late capture response into a dialog the player already closed. */
+    public static void cancelPendingCapture() {
+        INSTANCE.pendingCapture = null;
     }
 
     public static void clientTick() {
@@ -326,11 +336,19 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
                     BLUEPRINT_TRANSFERS.takeDownload(captureId);
             if (download.isPresent()) {
                 pendingCapture = null;
-                BlueprintSaveScreen.open(download.get().blueprint());
+                Minecraft minecraft = Minecraft.getInstance();
+                if (minecraft.screen instanceof BlueprintCaptureScreen captureScreen) {
+                    captureScreen.acceptCapture(download.get().blueprint());
+                }
             } else BLUEPRINT_TRANSFERS.takeResult(captureId).ifPresent(result -> {
                 if (!result.success()) {
                     pendingCapture = null;
-                    showBlueprintMessage(result.message());
+                    Minecraft minecraft = Minecraft.getInstance();
+                    if (minecraft.screen instanceof BlueprintCaptureScreen captureScreen) {
+                        captureScreen.captureFailed(result.message());
+                    } else {
+                        showBlueprintMessage(result.message());
+                    }
                 }
             });
         }

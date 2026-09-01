@@ -29,6 +29,7 @@ public class BuilderToolScreen extends Screen {
     private BuilderClientSnapshot snapshot = BuilderClientSnapshot.EMPTY;
     private BuilderMode localMode = BuilderMode.BUILD;
     private SurfaceMatchMode localMatch = SurfaceMatchMode.SAME_BLOCK;
+    private boolean localHistoryRecording;
     private EditBox buildLimit;
     private EditBox demolishLimit;
     private EditBox aclPlayer;
@@ -51,6 +52,7 @@ public class BuilderToolScreen extends Screen {
         if (!snapshot.enabled() && tab != Tab.BLUEPRINTS && tab != Tab.SETTINGS) tab = Tab.BLUEPRINTS;
         localMode = snapshot.mode();
         localMatch = snapshot.surfaceMatch();
+        localHistoryRecording = snapshot.historyRecording();
         addTabs();
         switch (tab) {
             case OPERATIONS -> initOperations();
@@ -106,6 +108,13 @@ public class BuilderToolScreen extends Screen {
         addRenderableWidget(demolishLimit);
         addRenderableWidget(Button.builder(Component.translatable("screen.mydimension.realmwright.apply"), button -> applyLimits())
                 .bounds(left + 264, top + 55, 104, 20).build());
+
+        Button history = Button.builder(historyRecordingLabel(), button -> {
+            localHistoryRecording = !localHistoryRecording;
+            button.setMessage(historyRecordingLabel());
+            BuilderClientServices.send(new BuilderClientCommand.SetHistoryRecording(localHistoryRecording));
+        }).bounds(left, top + 82, 172, 20).build();
+        addRenderableWidget(history);
 
         Button cancel = Button.builder(Component.translatable("screen.mydimension.realmwright.cancel_job"), button -> {
             BuilderClientServices.send(new BuilderClientCommand.CancelActive(snapshot.activeJobId()));
@@ -329,7 +338,7 @@ public class BuilderToolScreen extends Screen {
                         left + 132, top + 42, 0xFFBFC9D8, false);
                 String progress = snapshot.totalBlocks() <= 0 ? snapshot.status()
                         : snapshot.completedBlocks() + " / " + snapshot.totalBlocks() + "  " + snapshot.status();
-                graphics.drawString(font, progress, left, top + 88, 0xFFE7EDF7, false);
+                graphics.drawString(font, progress, left, top + 140, 0xFFE7EDF7, false);
             }
             case SUPPLIES -> {
                 if (snapshot.anchors().isEmpty()) {
@@ -448,6 +457,12 @@ public class BuilderToolScreen extends Screen {
     private Component matchLabel() {
         return Component.translatable(localMatch == SurfaceMatchMode.SAME_BLOCK
                 ? "screen.mydimension.realmwright.match.same" : "screen.mydimension.realmwright.match.any");
+    }
+
+    private Component historyRecordingLabel() {
+        return Component.translatable(localHistoryRecording
+                ? "screen.mydimension.realmwright.history_recording.on"
+                : "screen.mydimension.realmwright.history_recording.off");
     }
 
     private Component anchorLabel(BuilderClientSnapshot.AnchorView anchor) {

@@ -99,10 +99,13 @@ final class BuilderPreviewSectionMeshCache {
         }
         if (source != null
                 && source.dimension().equals(snapshot.dimension())
-                && source.cells().equals(snapshot.cells())) {
+                && source.cells().equals(snapshot.cells())
+                && source.blueprintPreview() == snapshot.blueprintPreview()) {
             source = snapshot;
             return;
         }
+
+        boolean includeBuildGhosts = snapshot.blueprintPreview();
 
         Map<SectionKey, List<BuilderPreviewState.Cell>> grouped = new LinkedHashMap<>();
         LongSet missingGhostPositions = new LongOpenHashSet();
@@ -115,12 +118,14 @@ final class BuilderPreviewSectionMeshCache {
         Map<SectionKey, SectionMesh> replacement = new LinkedHashMap<>(grouped.size());
         for (Map.Entry<SectionKey, List<BuilderPreviewState.Cell>> entry : grouped.entrySet()) {
             SectionMesh existing = previous.remove(entry.getKey());
-            if (existing != null && existing.matches(entry.getValue(), missingGhostPositions)) {
+            if (existing != null && existing.matches(
+                    entry.getValue(), missingGhostPositions, includeBuildGhosts)) {
                 replacement.put(entry.getKey(), existing);
             } else {
                 if (existing != null) existing.close();
                 replacement.put(entry.getKey(), new SectionMesh(
-                        entry.getKey(), entry.getValue(), missingGhostPositions));
+                        entry.getKey(), entry.getValue(), missingGhostPositions,
+                        includeBuildGhosts));
             }
         }
         previous.values().forEach(SectionMesh::close);
@@ -136,6 +141,7 @@ final class BuilderPreviewSectionMeshCache {
         private final AABB bounds;
         private final List<BuilderPreviewState.Cell> cells;
         private final List<WaveCell> waveCells;
+        private final boolean includeBuildGhosts;
         private final boolean hasGhosts;
 
         @Nullable private VertexBuffer outlineBuffer;
@@ -145,7 +151,7 @@ final class BuilderPreviewSectionMeshCache {
         private int waveCursor;
 
         private SectionMesh(SectionKey key, List<BuilderPreviewState.Cell> cells,
-                            LongSet missingGhostPositions) {
+                            LongSet missingGhostPositions, boolean includeBuildGhosts) {
             originX = key.x() * SECTION_SIZE;
             originY = key.y() * SECTION_SIZE;
             originZ = key.z() * SECTION_SIZE;
@@ -153,16 +159,18 @@ final class BuilderPreviewSectionMeshCache {
                     originX + SECTION_SIZE, originY + SECTION_SIZE, originZ + SECTION_SIZE)
                     .inflate(0.02D);
             this.cells = List.copyOf(cells);
+            this.includeBuildGhosts = includeBuildGhosts;
             waveCells = createWaveCells(cells, missingGhostPositions, originX, originY, originZ);
-            // BUILD previews deliberately remain wireframes. Besides matching the tool's visual
-            // language, excluding them here prevents the adjacent full-cube faces that used to
-            // shimmer at green-frame junctions.
-            hasGhosts = cells.stream().anyMatch(BuilderPreviewSectionMeshCache::isGhostCell);
+            // A manual surface BUILD is deliberately only a green wireframe. Blueprint placement
+            // uses the same BUILD kind, but must retain the concrete block projection so the player
+            // can inspect the copied palette before committing it.
+            hasGhosts = cells.stream().anyMatch(cell -> isGhostCell(cell, includeBuildGhosts));
         }
 
         private boolean matches(List<BuilderPreviewState.Cell> replacement,
-                                LongSet missingGhostPositions) {
-            return cells.equals(replacement)
+                                LongSet missingGhostPositions, boolean replacementBuildGhosts) {
+            return includeBuildGhosts == replacementBuildGhosts
+                    && cells.equals(replacement)
                     && waveCells.equals(createWaveCells(
                     replacement, missingGhostPositions, originX, originY, originZ));
         }
@@ -225,7 +233,7 @@ final class BuilderPreviewSectionMeshCache {
             PoseStack pose = new PoseStack();
             for (int index = start; index < end; index++) {
                 BuilderPreviewState.Cell cell = cells.get(index);
-                if (!isGhostCell(cell)) continue;
+                if (!isGhostCell(cell, includeBuildGhosts)) continue;
                 pose.pushPose();
                 pose.translate(cell.pos().getX() - originX + GHOST_MODEL_INSET,
                         cell.pos().getY() - originY + GHOST_MODEL_INSET,
@@ -373,11 +381,16 @@ final class BuilderPreviewSectionMeshCache {
                 && !cell.state().isAir();
     }
 
-    /** Only material projections need a concrete model; BUILD is always a green wireframe. */
-    private static boolean isGhostCell(BuilderPreviewState.Cell cell) {
-        return cell.ghost() && cell.kind() != BuilderPreviewState.Kind.BUILD
+    /** BUILD models are concrete only inside blueprint copy/deployment snapshots. */
+    static boolean isGhostCell(BuilderPreviewState.Cell cell, boolean blueprintPreview) {
+        return cell.ghost()
+                && permitsGhostKind(cell.kind(), blueprintPreview)
                 && !cell.state().isAir()
                 && cell.state().getRenderShape() != RenderShape.INVISIBLE;
+    }
+
+    static boolean permitsGhostKind(BuilderPreviewState.Kind kind, boolean blueprintPreview) {
+        return kind != BuilderPreviewState.Kind.BUILD || blueprintPreview;
     }
 
     private static List<WaveCell> createWaveCells(List<BuilderPreviewState.Cell> cells,
