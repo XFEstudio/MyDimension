@@ -127,32 +127,42 @@ public final class ClientBlueprintLibrary {
             return CompletableFuture.completedFuture(entries);
         }
         refreshing = true;
-        return CompletableFuture.supplyAsync(this::scan, executor)
+        return CompletableFuture.supplyAsync(() -> {
+                    synchronized (mutationLock) {
+                        ScanResult result = scan();
+                        publishScan(result);
+                        return result.entries();
+                    }
+                }, executor)
                 .handle((result, failure) -> {
                     refreshing = false;
                     if (failure != null) {
                         lastError = rootMessage(failure);
                         return entries;
                     }
-                    entries = result.entries();
-                    cache = Map.copyOf(result.data());
-                    lastError = "";
-                    return entries;
+                    return result;
                 });
     }
 
     public CompletableFuture<Entry> saveAsync(BlueprintData blueprint, ConflictPolicy policy) {
         return CompletableFuture.supplyAsync(() -> {
-            try {
-                ConflictResolution resolution = resolveConflict(blueprint, policy);
-                BlueprintData value = resolution.blueprint();
-                Path output = writeAtomically(value);
-                deleteSupersededAfterCommit(resolution.supersededName(), output);
-                Entry entry = entry(value, output);
-                refreshAsync();
-                return entry;
-            } catch (IOException | RuntimeException exception) {
-                throw new CompletionException(exception);
+            synchronized (mutationLock) {
+                try {
+                    // Saving from the Alt wheel is valid before the library tab has ever been
+                    // opened. Always resolve names against a fresh on-disk snapshot while holding
+                    // the same lock as the commit, so two local saves/imports cannot both pass a
+                    // stale empty-cache check.
+                    publishScan(scan());
+                    ConflictResolution resolution = resolveConflict(blueprint, policy);
+                    BlueprintData value = resolution.blueprint();
+                    Path output = writeAtomically(value);
+                    deleteSupersededAfterCommit(resolution.supersededName(), output);
+                    Entry saved = entry(value, output);
+                    publishSave(saved, value, resolution.supersededName());
+                    return saved;
+                } catch (IOException | RuntimeException exception) {
+                    throw new CompletionException(exception);
+                }
             }
         }, executor);
     }
@@ -162,13 +172,16 @@ public final class ClientBlueprintLibrary {
             try {
                 Path normalized = validateExternalFile(source);
                 BlueprintData data = read(normalized);
-                ConflictResolution resolution = resolveConflict(data, policy);
-                BlueprintData value = resolution.blueprint();
-                Path output = writeAtomically(value);
-                deleteSupersededAfterCommit(resolution.supersededName(), output);
-                Entry entry = entry(value, output);
-                refreshAsync();
-                return entry;
+                synchronized (mutationLock) {
+                    publishScan(scan());
+                    ConflictResolution resolution = resolveConflict(data, policy);
+                    BlueprintData value = resolution.blueprint();
+                    Path output = writeAtomically(value);
+                    deleteSupersededAfterCommit(resolution.supersededName(), output);
+                    Entry imported = entry(value, output);
+                    publishSave(imported, value, resolution.supersededName());
+                    return imported;
+                }
             } catch (IOException | RuntimeException exception) {
                 throw new CompletionException(exception);
             }
@@ -187,6 +200,7 @@ public final class ClientBlueprintLibrary {
             }
             synchronized (mutationLock) {
                 try {
+                    publishScan(scan());
                     Entry source = entries.stream().filter(Entry::valid)
                             .filter(entry -> entry.id().equals(id)).findFirst()
                             .orElseThrow(() -> new IOException("Blueprint is no longer present in the local library"));
@@ -243,19 +257,30 @@ public final class ClientBlueprintLibrary {
 
     public CompletableFuture<Boolean> deleteAsync(UUID id) {
         return CompletableFuture.supplyAsync(() -> {
-            Entry entry = entries.stream().filter(value -> value.valid() && value.id().equals(id)).findFirst().orElse(null);
-            if (entry == null) return false;
-            try {
-                Path library = directory().toRealPath(LinkOption.NOFOLLOW_LINKS);
-                Path target = entry.path().toRealPath(LinkOption.NOFOLLOW_LINKS);
-                if (!target.startsWith(library) || Files.isSymbolicLink(entry.path())) {
-                    throw new IOException("Blueprint path escaped the library directory");
+            synchronized (mutationLock) {
+                try {
+                    publishScan(scan());
+                    Entry entry = entries.stream().filter(value -> value.valid() && value.id().equals(id))
+                            .findFirst().orElse(null);
+                    if (entry == null) return false;
+                    Path library = directory().toRealPath(LinkOption.NOFOLLOW_LINKS);
+                    Path target = entry.path().toRealPath(LinkOption.NOFOLLOW_LINKS);
+                    if (!target.startsWith(library) || Files.isSymbolicLink(entry.path())) {
+                        throw new IOException("Blueprint path escaped the library directory");
+                    }
+                    boolean deleted = Files.deleteIfExists(target);
+                    if (deleted) {
+                        List<Entry> nextEntries = new ArrayList<>(entries);
+                        nextEntries.removeIf(value -> value.id().equals(id));
+                        Map<UUID, BlueprintData> nextCache = new HashMap<>(cache);
+                        nextCache.remove(id);
+                        entries = List.copyOf(nextEntries);
+                        cache = Map.copyOf(nextCache);
+                    }
+                    return deleted;
+                } catch (IOException | RuntimeException exception) {
+                    throw new CompletionException(exception);
                 }
-                boolean deleted = Files.deleteIfExists(target);
-                refreshAsync();
-                return deleted;
-            } catch (IOException exception) {
-                throw new CompletionException(exception);
             }
         }, executor);
     }
@@ -449,6 +474,29 @@ public final class ClientBlueprintLibrary {
 
         Map<UUID, BlueprintData> nextCache = new HashMap<>(cache);
         nextCache.put(renamed.id(), renamed);
+        if (superseded != null) nextCache.remove(superseded.id());
+        entries = List.copyOf(nextEntries);
+        cache = Map.copyOf(nextCache);
+        lastError = "";
+    }
+
+    private void publishScan(ScanResult result) {
+        entries = result.entries();
+        cache = Map.copyOf(result.data());
+        lastError = "";
+    }
+
+    private void publishSave(Entry savedEntry, BlueprintData saved, Entry superseded) {
+        List<Entry> nextEntries = new ArrayList<>(entries);
+        nextEntries.removeIf(entry -> entry.id().equals(savedEntry.id())
+                || superseded != null && entry.id().equals(superseded.id()));
+        nextEntries.add(savedEntry);
+        nextEntries.sort(Comparator.comparing(Entry::valid).reversed()
+                .thenComparing(entry -> entry.name().toLowerCase(java.util.Locale.ROOT))
+                .thenComparing(Entry::id));
+
+        Map<UUID, BlueprintData> nextCache = new HashMap<>(cache);
+        nextCache.put(saved.id(), saved);
         if (superseded != null) nextCache.remove(superseded.id());
         entries = List.copyOf(nextEntries);
         cache = Map.copyOf(nextCache);

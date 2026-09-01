@@ -5,6 +5,8 @@ import com.xfestudio.mydimension.builder.anchor.AnchorContainerResolver;
 import com.xfestudio.mydimension.builder.blueprint.BlueprintData;
 import com.xfestudio.mydimension.builder.blueprint.BlueprintIo;
 import com.xfestudio.mydimension.builder.blueprint.BlueprintSaveMode;
+import com.xfestudio.mydimension.builder.history.BuilderTransaction;
+import com.xfestudio.mydimension.builder.history.WorldDelta;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.gametest.framework.GameTest;
@@ -184,6 +186,26 @@ public final class BuilderGameTests {
                 "The lower support was not placed");
         helper.assertTrue(helper.getLevel().getBlockState(dependent).is(Blocks.TORCH),
                 "The upper dependent block was not placed on its bounded retry");
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
+    public static void continuationPrefixRejectsExternalWorldChanges(GameTestHelper helper) {
+        BlockPos position = helper.absolutePos(new BlockPos(1, 1, 1));
+        BlockState before = helper.getLevel().getBlockState(position);
+        helper.getLevel().setBlock(position, Blocks.STONE.defaultBlockState(), Block.UPDATE_ALL);
+        BuilderTransaction transaction = new BuilderTransaction(UUID.randomUUID(), UUID.randomUUID(),
+                helper.getLevel().dimension(), BuilderTransaction.Type.BUILD, System.currentTimeMillis(),
+                List.of(new WorldDelta(position, before, null,
+                        Blocks.STONE.defaultBlockState(), null)),
+                List.of(), List.of(), ItemStack.EMPTY, ItemStack.EMPTY,
+                BuilderTransaction.State.APPLIED);
+
+        helper.assertTrue(transaction.matchesAppliedAfter(helper.getLevel()),
+                "Unmodified applied transaction should match its continuation prefix");
+        helper.getLevel().setBlock(position, Blocks.DIAMOND_BLOCK.defaultBlockState(), Block.UPDATE_ALL);
+        helper.assertTrue(!transaction.matchesAppliedAfter(helper.getLevel()),
+                "External edits must not be absorbed into a resumed transaction");
         helper.succeed();
     }
 

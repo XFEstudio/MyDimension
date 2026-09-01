@@ -8,6 +8,7 @@ import com.xfestudio.mydimension.builder.BuilderOperationManager;
 import com.xfestudio.mydimension.builder.BuilderRuntime;
 import com.xfestudio.mydimension.builder.RealmwrightData;
 import com.xfestudio.mydimension.builder.ResonantAnchorTarget;
+import com.xfestudio.mydimension.client.builder.RealmwrightScepterClientExtensions;
 import com.xfestudio.mydimension.config.BuilderConfig;
 import net.minecraft.ChatFormatting;
 import net.minecraft.network.chat.Component;
@@ -27,16 +28,23 @@ import net.minecraft.world.item.context.UseOnContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraftforge.common.ForgeMod;
+import net.minecraftforge.client.extensions.common.IClientItemExtensions;
 
 import javax.annotation.Nullable;
 import java.util.List;
 import java.util.UUID;
+import java.util.function.Consumer;
 
 public final class RealmwrightScepterItem extends Item {
     private static final UUID REACH_MODIFIER_ID = UUID.fromString("6db36f7a-5c3c-4e53-91d3-dced67201f45");
 
     public RealmwrightScepterItem(Properties properties) {
         super(properties.stacksTo(1));
+    }
+
+    @Override
+    public void initializeClient(Consumer<IClientItemExtensions> consumer) {
+        RealmwrightScepterClientExtensions.initialize(consumer);
     }
 
     @Override

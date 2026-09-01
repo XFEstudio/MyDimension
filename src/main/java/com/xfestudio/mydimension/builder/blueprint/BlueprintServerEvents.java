@@ -1,7 +1,6 @@
 package com.xfestudio.mydimension.builder.blueprint;
 
 import com.xfestudio.mydimension.MyDimension;
-import com.xfestudio.mydimension.builder.BuilderSurfaceRateLimiter;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
@@ -25,7 +24,6 @@ public final class BlueprintServerEvents {
     @SubscribeEvent
     public static void playerLogout(PlayerEvent.PlayerLoggedOutEvent event) {
         if (event.getEntity() instanceof ServerPlayer player) {
-            BuilderSurfaceRateLimiter.removePlayer(player.getServer(), player.getUUID());
             BlueprintTaskManager.get(player.getServer()).pausePlayer(player);
             BlueprintServerService.get(player.getServer()).removePlayer(player);
         }
@@ -40,7 +38,6 @@ public final class BlueprintServerEvents {
 
     @SubscribeEvent
     public static void serverStopping(ServerStoppingEvent event) {
-        BuilderSurfaceRateLimiter.shutdown(event.getServer());
         BlueprintTaskManager.shutdown(event.getServer());
         BlueprintServerService.shutdown(event.getServer());
     }

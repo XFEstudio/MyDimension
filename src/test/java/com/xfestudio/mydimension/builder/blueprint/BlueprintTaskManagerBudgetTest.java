@@ -45,6 +45,22 @@ class BlueprintTaskManagerBudgetTest {
                 .map(block -> block.worldPos().getX()).toList());
     }
 
+    @Test
+    void completedProgressAdvancesOnlyByActuallyChangedBlocks() {
+        int completed = BlueprintTaskManager.accumulatedCompleted(12, 20);
+        assertEquals(32, completed);
+
+        // A batch may advance its execution cursor while every remaining cell is
+        // missing, blocked, or already equal. None of those are successful edits.
+        assertEquals(32, BlueprintTaskManager.accumulatedCompleted(completed, 0));
+    }
+
+    @Test
+    void completedProgressSaturatesWithoutWrapping() {
+        assertEquals(Integer.MAX_VALUE,
+                BlueprintTaskManager.accumulatedCompleted(Integer.MAX_VALUE - 3, 20));
+    }
+
     private static BlueprintPlacementPlan.PlannedBlock blockAt(int x) {
         return blockAt(x, 64, 0);
     }

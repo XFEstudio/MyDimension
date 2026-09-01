@@ -13,6 +13,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Material bridge that gives ordered bound anchors priority over the player inventory. */
 public final class AnchorRemoteBridge implements BuilderMaterials.RemoteBridge {
@@ -61,33 +62,39 @@ public final class AnchorRemoteBridge implements BuilderMaterials.RemoteBridge {
 
     @Override
     public ItemStack insert(ServerPlayer player, ItemStack scepter, ItemStack stack) {
-        ItemStack remaining = stack.copy();
-        if (remaining.isEmpty()) {
-            return ItemStack.EMPTY;
+        return insertAll(player, scepter, List.of(stack)).get(0);
+    }
+
+    @Override
+    public List<ItemStack> insertAll(ServerPlayer player, ItemStack scepter, List<ItemStack> stacks) {
+        List<ItemStack> remaining = new ArrayList<>(stacks.size());
+        for (ItemStack stack : stacks) {
+            remaining.add(stack.isEmpty() ? ItemStack.EMPTY : stack.copy());
         }
+        if (remaining.stream().allMatch(ItemStack::isEmpty)) return List.copyOf(remaining);
 
         Set<Endpoint> visited = new HashSet<>();
         for (UUID anchorId : AnchorBindings.read(scepter)) {
-            if (remaining.isEmpty()) {
-                break;
+            if (remaining.stream().allMatch(ItemStack::isEmpty)) break;
+            List<ItemStack> offered = copyStacks(remaining);
+            // Preserve the last known remainder even if lease cleanup fails after the handler has
+            // already committed items. Falling back to the pre-anchor input would duplicate them.
+            AtomicReference<List<ItemStack>> committedRemainder = new AtomicReference<>(offered);
+            try {
+                AnchorAccess.withContainer(player, anchorId, context -> {
+                    Endpoint endpoint = Endpoint.of(context);
+                    if (!visited.add(endpoint)) return offered;
+                    List<ItemStack> processed = insertAllIntoHandler(context, offered);
+                    committedRemainder.set(processed);
+                    return processed;
+                });
+            } catch (RuntimeException exception) {
+                // Acquisition/index failures occur before handler access; close failures occur after
+                // the callback and are covered by committedRemainder.
             }
-            ItemStack offered = remaining.copy();
-            AnchorAccess.AccessResult<ItemStack> result = AnchorAccess.withContainer(
-                    player,
-                    anchorId,
-                    context -> {
-                        Endpoint endpoint = Endpoint.of(context);
-                        if (!visited.add(endpoint)) {
-                            return offered;
-                        }
-                        return insertIntoHandler(context, offered);
-                    }
-            );
-            if (result.available() && result.value() != null) {
-                remaining = result.value();
-            }
+            remaining = new ArrayList<>(committedRemainder.get());
         }
-        return remaining;
+        return List.copyOf(remaining);
     }
 
     /** Iterates every handler slot at most once for this extraction request. */
@@ -152,41 +159,75 @@ public final class AnchorRemoteBridge implements BuilderMaterials.RemoteBridge {
         return new BuilderMaterials.Extraction(requestedCount - remaining, extracted);
     }
 
-    /** Iterates every handler slot at most once for this insertion request. */
-    private static ItemStack insertIntoHandler(AnchorAccess.ContainerContext context, ItemStack offered) {
+    /** Resolves the handler and its slot count once for every bound endpoint in this operation. */
+    private static List<ItemStack> insertAllIntoHandler(AnchorAccess.ContainerContext context,
+                                                        List<ItemStack> offered) {
         IItemHandler handler = context.container().handler();
-        ItemStack remaining = offered.copy();
         int slots;
         try {
             slots = Math.min(Math.max(0, handler.getSlots()), MALFORMED_HANDLER_SLOT_LIMIT);
         } catch (RuntimeException exception) {
             report(context, exception);
-            return remaining;
+            return copyStacks(offered);
         }
 
-        for (int slot = 0; slot < slots && !remaining.isEmpty(); slot++) {
-            try {
-                ItemStack offeredToSlot = remaining.copy();
-                ItemStack before = handler.getStackInSlot(slot).copy();
+        List<ItemStack> remaining = copyStacks(offered);
+        for (int valueIndex = 0; valueIndex < remaining.size(); valueIndex++) {
+            ItemStack value = remaining.get(valueIndex);
+            if (value.isEmpty()) continue;
+            for (int slot = 0; slot < slots && !value.isEmpty(); slot++) {
                 try {
-                    remaining = handler.insertItem(slot, offeredToSlot, false);
+                    ItemStack offeredToSlot = value.copy();
+                    ItemStack before = handler.getStackInSlot(slot).copy();
+                    try {
+                        ItemStack returned = handler.insertItem(slot, offeredToSlot.copy(), false);
+                        if (!validRemainder(offeredToSlot, returned)) {
+                            value = reconcileInsertion(handler, slot, before, offeredToSlot);
+                            report(context, new IllegalStateException(
+                                    "Item handler returned a malformed insertion remainder"));
+                            break;
+                        }
+                        value = returned.isEmpty() ? ItemStack.EMPTY : returned.copy();
+                    } catch (RuntimeException exception) {
+                        value = reconcileInsertion(handler, slot, before, offeredToSlot);
+                        report(context, exception);
+                        break;
+                    }
                 } catch (RuntimeException exception) {
-                    int observed = observedInsertion(handler, slot, before, offeredToSlot);
-                    if (observed > 0) remaining.shrink(Math.min(observed, remaining.getCount()));
                     report(context, exception);
                     break;
                 }
-            } catch (RuntimeException exception) {
-                report(context, exception);
-                break;
             }
+            remaining.set(valueIndex, value.isEmpty() ? ItemStack.EMPTY : value.copy());
         }
-        return remaining;
+        return List.copyOf(remaining);
+    }
+
+    private static List<ItemStack> copyStacks(List<ItemStack> stacks) {
+        List<ItemStack> copies = new ArrayList<>(stacks.size());
+        for (ItemStack stack : stacks) copies.add(stack.isEmpty() ? ItemStack.EMPTY : stack.copy());
+        return copies;
+    }
+
+    private static boolean validRemainder(ItemStack offered, ItemStack returned) {
+        return returned != null && (returned.isEmpty()
+                || matches(returned, offered) && returned.getCount() <= offered.getCount());
+    }
+
+    private static ItemStack reconcileInsertion(IItemHandler handler, int slot, ItemStack before,
+                                                ItemStack offered) {
+        int inserted = observedInsertion(handler, slot, before, offered);
+        int remaining = offered.getCount() - Math.min(offered.getCount(), Math.max(0, inserted));
+        return remaining <= 0 ? ItemStack.EMPTY : offered.copyWithCount(remaining);
     }
 
     private static void report(AnchorAccess.ContainerContext context, RuntimeException exception) {
-        AnchorContainerResolver.reportHandlerFailure(context.location().dimension(),
-                context.container().position(), context.container().side(), exception);
+        try {
+            AnchorContainerResolver.reportHandlerFailure(context.location().dimension(),
+                    context.container().position(), context.container().side(), exception);
+        } catch (RuntimeException ignored) {
+            // Diagnostics must never invalidate a remainder after a handler has committed items.
+        }
     }
 
     private static void appendUpTo(List<ItemStack> target, List<ItemStack> source, int maximum) {

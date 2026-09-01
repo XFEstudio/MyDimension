@@ -21,6 +21,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 /** Client-owned, immutable-at-the-boundary state for world previews. */
@@ -143,14 +144,19 @@ public final class BuilderPreviewState {
 
     private static final BuilderPreviewState INSTANCE = new BuilderPreviewState();
 
-    private volatile Snapshot snapshot;
+    @Nullable
+    private volatile PublishedPreview published;
     @Nullable
     private volatile Focus focus;
     @Nullable
     private volatile Candidate controlCandidate;
-    @Nullable
-    private volatile AABB blueprintBounds;
-    private volatile Map<BlockPos, MissingTarget> interactiveGroups = Map.of();
+    private record PublishedPreview(Snapshot snapshot,
+                                    Map<BlockPos, MissingTarget> interactiveGroups,
+                                    @Nullable AABB blueprintBounds) {
+        private PublishedPreview {
+            interactiveGroups = Map.copyOf(interactiveGroups);
+        }
+    }
 
     BuilderPreviewState() {
     }
@@ -161,15 +167,14 @@ public final class BuilderPreviewState {
 
     @Nullable
     public Snapshot snapshot() {
-        return snapshot;
+        PublishedPreview frame = published;
+        return frame == null ? null : frame.snapshot();
     }
 
     public void accept(Snapshot value) {
-        snapshot = value;
         focus = null;
         if (value.cells().isEmpty()) {
-            interactiveGroups = Map.of();
-            blueprintBounds = null;
+            published = new PublishedPreview(value, Map.of(), null);
             return;
         }
         Map<BlockPos, Cell> targets = new LinkedHashMap<>();
@@ -192,22 +197,24 @@ public final class BuilderPreviewState {
                 maxZ = Math.max(maxZ, cell.pos().getZ());
             }
         }
-        interactiveGroups = targets.isEmpty() ? Map.of() : indexMissingGroups(targets);
-        blueprintBounds = value.blueprintPreview() && minX != Integer.MAX_VALUE
+        Map<BlockPos, MissingTarget> groups = targets.isEmpty()
+                ? Map.of() : indexMissingGroups(targets);
+        AABB bounds = value.blueprintPreview() && minX != Integer.MAX_VALUE
                 ? new AABB(minX, minY, minZ, maxX + 1.0D, maxY + 1.0D, maxZ + 1.0D)
                 : null;
+        // Publish the immutable snapshot and all derived indexes together. Readers can never
+        // observe cells from one generation with bounds/groups from another generation.
+        published = new PublishedPreview(value, groups, bounds);
     }
 
     public void clear() {
-        snapshot = null;
         focus = null;
         controlCandidate = null;
-        blueprintBounds = null;
-        interactiveGroups = Map.of();
+        published = null;
     }
 
     public void clearLocalWorkflow() {
-        Snapshot value = snapshot;
+        Snapshot value = snapshot();
         if (value != null) {
             accept(new Snapshot(value.dimension(), List.of(),
                     new Selection(value.dimension(), null, null), null,
@@ -218,7 +225,7 @@ public final class BuilderPreviewState {
 
     /** Removes only the transformed placement, retaining the copied source cuboid. */
     public void clearPlacementPreview() {
-        Snapshot value = snapshot;
+        Snapshot value = snapshot();
         if (value == null || !value.blueprintPreview()) return;
         List<Cell> remaining = value.cells().stream()
                 .filter(cell -> cell.kind() == Kind.MISSING).toList();
@@ -229,7 +236,7 @@ public final class BuilderPreviewState {
 
     /** Removes only the copied source selection, retaining deployment or missing previews. */
     public void clearSelection() {
-        Snapshot value = snapshot;
+        Snapshot value = snapshot();
         if (value == null || !value.selection().active()) return;
         boolean stillCancelable = value.blueprintPreview() || value.activeJobId() != null;
         accept(new Snapshot(value.dimension(), value.cells(),
@@ -239,7 +246,7 @@ public final class BuilderPreviewState {
 
     /** Removes only the yellow task cells after a transaction-specific cancellation. */
     public void clearMissingPreview() {
-        Snapshot value = snapshot;
+        Snapshot value = snapshot();
         if (value == null || value.activeJobId() == null) return;
         List<Cell> remaining = value.cells().stream()
                 .filter(cell -> cell.kind() != Kind.MISSING).toList();
@@ -249,12 +256,12 @@ public final class BuilderPreviewState {
     }
 
     public boolean isBlueprintPreviewActive() {
-        Snapshot value = snapshot;
+        Snapshot value = snapshot();
         return value != null && value.blueprintPreview();
     }
 
     public boolean hasSaveableSelection() {
-        Snapshot value = snapshot;
+        Snapshot value = snapshot();
         return value != null && value.selection() != null && value.selection().complete();
     }
 
@@ -264,7 +271,7 @@ public final class BuilderPreviewState {
     }
 
     public boolean hasCancelableWorkflow() {
-        Snapshot value = snapshot;
+        Snapshot value = snapshot();
         return value != null && value.cancelable();
     }
 
@@ -275,12 +282,12 @@ public final class BuilderPreviewState {
     /** Resolves focus and workflow state once so an input event cannot cancel a different object. */
     @Nullable
     public CancelTarget focusedCancelTarget() {
-        return cancelTarget(snapshot, focus);
+        return cancelTarget(snapshot(), focus);
     }
 
     @Nullable
     public UUID activeJobId() {
-        Snapshot value = snapshot;
+        Snapshot value = snapshot();
         return value == null ? null : value.activeJobId();
     }
 
@@ -302,7 +309,8 @@ public final class BuilderPreviewState {
 
     @Nullable
     public AABB blueprintBounds() {
-        return blueprintBounds;
+        PublishedPreview frame = published;
+        return frame == null ? null : frame.blueprintBounds();
     }
 
     public void setControlCandidate(ResourceKey<Level> dimension, BlockPos position) {
@@ -352,12 +360,38 @@ public final class BuilderPreviewState {
     }
 
     /**
+     * A normal surface/selection/deployment preview is client-owned. Server synchronization also
+     * sends an empty packet to mean "there is no material-waiting task"; accepting that packet
+     * verbatim creates a one-frame blank before the local planner republishes its result. Preserve
+     * client-owned content in that case, while an actual task completion still removes its yellow
+     * cells immediately.
+     */
+    static Snapshot mergeServerSnapshot(@Nullable Snapshot current, Snapshot incoming,
+                                        boolean emptyServerWorkflow) {
+        if (!emptyServerWorkflow || current == null
+                || !Objects.equals(current.dimension(), incoming.dimension())) return incoming;
+
+        if (current.activeJobId() != null) {
+            List<Cell> remaining = current.cells().stream()
+                    .filter(cell -> cell.kind() != Kind.MISSING).toList();
+            boolean cancelable = current.blueprintPreview() || incoming.selection().active();
+            return new Snapshot(incoming.dimension(), remaining, incoming.selection(), null,
+                    current.blueprintPreview(), cancelable, incoming.revision());
+        }
+
+        boolean clientOwned = !current.cells().isEmpty() || current.blueprintPreview()
+                || current.selection().active();
+        return clientOwned ? current : incoming;
+    }
+
+    /**
      * Updates the yellow/blue virtual-cell under the crosshair. A voxel DDA
      * visits at most a few hundred positions at 64-block reach and performs
      * O(1) lookups, rather than scanning a 65k-cell blueprint every tick.
      */
     public void updateHoveredTarget(Minecraft minecraft, float partialTick, double maximumDistance) {
-        Snapshot value = snapshot;
+        PublishedPreview frame = published;
+        Snapshot value = frame == null ? null : frame.snapshot();
         Candidate candidate = controlCandidate;
         if (minecraft.player == null || minecraft.level == null) {
             focus = null;
@@ -371,9 +405,10 @@ public final class BuilderPreviewState {
             focus = null;
             return;
         }
-        Map<BlockPos, MissingTarget> groups = snapshotVisible ? interactiveGroups : Map.of();
+        Map<BlockPos, MissingTarget> groups = snapshotVisible
+                ? frame.interactiveGroups() : Map.of();
         AABB visibleDeploymentBounds = snapshotVisible && value.blueprintPreview()
-                ? blueprintBounds : null;
+                ? frame.blueprintBounds() : null;
         AABB visibleSelectionBounds = snapshotVisible && value.selection() != null
                 ? value.selection().bounds() : null;
         if (groups.isEmpty() && visibleDeploymentBounds == null

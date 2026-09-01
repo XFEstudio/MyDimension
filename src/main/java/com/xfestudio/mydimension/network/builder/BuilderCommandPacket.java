@@ -208,13 +208,6 @@ public final class BuilderCommandPacket {
             return;
         }
 
-        if (packet.action.worldMutation) {
-            if (player.getCooldowns().isOnCooldown(scepter.getItem())) {
-                return;
-            }
-            player.getCooldowns().addCooldown(scepter.getItem(), 1);
-        }
-
         if (packet.action == Action.USE) {
             if (useTarget(player, scepter, packet.target)) BuilderNetworkBridge.sync(player);
             return;
@@ -279,7 +272,8 @@ public final class BuilderCommandPacket {
             return result == AnchorBindings.BindResult.BOUND;
         }
 
-        BuilderOperationManager.Result result = BuilderOperationManager.executeSurface(player, scepter, hit);
+        BuilderOperationManager.Result result = BuilderOperationManager.executeValidatedSurface(
+                player, scepter, hit);
         if (!result.accepted() && result.rejectionKey() != null) {
             player.displayClientMessage(Component.translatable(result.rejectionKey()), true);
         }
@@ -386,28 +380,22 @@ public final class BuilderCommandPacket {
     }
 
     public enum Action {
-        REQUEST_SNAPSHOT(false),
-        OPEN_MENU(false),
-        SET_MODE(false),
-        SET_MATCH(false),
-        SET_LIMITS(false),
-        SET_HISTORY_RECORDING(false),
-        USE(true),
-        RESUME(true),
-        CANCEL(false),
-        UNDO(true),
-        REDO(true),
-        UNBIND_ANCHOR(false),
-        MOVE_ANCHOR(false),
-        SET_ANCHOR_PUBLIC(false),
-        SET_ANCHOR_PLAYER(false),
-        CANCEL_BLUEPRINT(false);
-
-        private final boolean worldMutation;
-
-        Action(boolean worldMutation) {
-            this.worldMutation = worldMutation;
-        }
+        REQUEST_SNAPSHOT,
+        OPEN_MENU,
+        SET_MODE,
+        SET_MATCH,
+        SET_LIMITS,
+        SET_HISTORY_RECORDING,
+        USE,
+        RESUME,
+        CANCEL,
+        UNDO,
+        REDO,
+        UNBIND_ANCHOR,
+        MOVE_ANCHOR,
+        SET_ANCHOR_PUBLIC,
+        SET_ANCHOR_PLAYER,
+        CANCEL_BLUEPRINT
     }
 
     public record Target(BlockPos pos, Direction face, boolean inside) {

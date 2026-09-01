@@ -1,0 +1,22 @@
+{
+  "credit": "MyDimension second animated Realmwright head fragment phase",
+  "ambientocclusion": false,
+  "gui_light": "side",
+  "render_type": "minecraft:cutout",
+  "textures": {
+    "crystal": "mydimension:item/realmwright_rift_crystal",
+    "particle": "mydimension:item/realmwright_rift_crystal"
+  },
+  "elements": [
+    {
+      "name": "floating_shard_upper_left", "from": [1.8, 28.0, 7.1], "to": [2.7, 29.5, 8.9],
+      "rotation": { "origin": [2.25, 28.75, 8], "axis": "z", "angle": 22.5, "rescale": true }, "shade": false,
+      "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "south": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "west": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "east": { "uv": [0, 0, 16, 16], "texture": "#crystal" } }
+    },
+    {
+      "name": "floating_shard_far_right", "from": [19.0, 22.0, 6.9], "to": [20.4, 24.8, 9.1],
+      "rotation": { "origin": [19.7, 23.4, 8], "axis": "z", "angle": 22.5, "rescale": true }, "shade": false,
+      "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "south": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "west": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "east": { "uv": [0, 0, 16, 16], "texture": "#crystal" } }
+    }
+  ]
+}

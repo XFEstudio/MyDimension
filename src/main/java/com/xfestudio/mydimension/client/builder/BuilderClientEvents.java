@@ -167,7 +167,7 @@ public final class BuilderClientEvents {
         }
         Minecraft minecraft = Minecraft.getInstance();
         BuilderAnchorPreviewTracker.tick(minecraft);
-        if (minecraft.screen != null || !BuilderClientServices.isHoldingRealmwright(minecraft)) {
+        if (!BuilderClientServices.isHoldingRealmwright(minecraft)) {
             drain(BuilderKeyMappings.TOGGLE_MODE);
             drain(BuilderKeyMappings.UNDO);
             drain(BuilderKeyMappings.REDO);
@@ -176,6 +176,19 @@ public final class BuilderClientEvents {
             BuilderPreviewState.get().clearHover();
             BuilderSurfacePreviewPlanner.reset();
             BuilderPreviewRenderer.clearCache();
+            return;
+        }
+        if (minecraft.screen != null) {
+            drain(BuilderKeyMappings.TOGGLE_MODE);
+            drain(BuilderKeyMappings.UNDO);
+            drain(BuilderKeyMappings.REDO);
+            ALT_ACTIONS.reset();
+            CONTROL_TARGET.reset();
+            BuilderPreviewState.get().clearHover();
+            BuilderSurfacePreviewPlanner.reset();
+            // Menus temporarily pause targeting, but the immutable preview and its GPU cache stay
+            // alive behind the screen. Closing a menu therefore cannot restart from an empty VBO.
+            BuilderPreviewRenderer.tick(minecraft);
             return;
         }
 

@@ -47,10 +47,16 @@ final class BuilderFocusedOutlineCache {
      */
     void synchronize(@Nullable BuilderPreviewState.MissingGroup group, long nowNanos) {
         if (group != null && source != group) {
-            clearGeometry();
-            source = group;
-            focusAmount = 0.0F;
-            populate(group);
+            if (sameGroup(source, group)) {
+                // Snapshot refreshes rebuild the immutable group object even when its cells did
+                // not change. Keep the finished VBOs instead of flashing back to a thin outline.
+                source = group;
+            } else {
+                clearGeometry();
+                source = group;
+                focusAmount = 0.0F;
+                populate(group);
+            }
         }
         focusTarget = group != null;
         advanceAnimation(nowNanos);
@@ -58,6 +64,12 @@ final class BuilderFocusedOutlineCache {
             clearGeometry();
             source = null;
         }
+    }
+
+    private static boolean sameGroup(@Nullable BuilderPreviewState.MissingGroup first,
+                                     BuilderPreviewState.MissingGroup second) {
+        return first != null && first.bounds().equals(second.bounds())
+                && first.cells().equals(second.cells());
     }
 
     private void populate(BuilderPreviewState.MissingGroup group) {

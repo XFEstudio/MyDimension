@@ -22,6 +22,10 @@ public final class BlueprintCaptureScreen extends Screen {
     private Button modeButton;
     private Button saveButton;
     private Button cancelButton;
+    private BlueprintData capturedBlueprint;
+    private BlueprintData pendingReplacement;
+    private String submittedName = "";
+    private BlueprintSaveMode submittedMode = BlueprintSaveMode.BLOCKS_ONLY;
 
     public BlueprintCaptureScreen(Screen parent) {
         // This dialog is entered from the wheel's SAVE action. Although the server performs
@@ -35,15 +39,22 @@ public final class BlueprintCaptureScreen extends Screen {
     protected void init() {
         int panelTop = height / 2 - 91;
         int left = width / 2 - 150;
+        String retainedName = name == null
+                ? Component.translatable("screen.mydimension.realmwright.blueprint.default_name").getString()
+                : name.getValue();
         name = new EditBox(font, left, panelTop + 34, 300, 22,
                 Component.translatable("screen.mydimension.realmwright.blueprint.name"));
         name.setMaxLength(64);
-        name.setValue(Component.translatable("screen.mydimension.realmwright.blueprint.default_name").getString());
+        // Screen#init runs again after resize/fullscreen changes. Keep both the user's draft and
+        // an in-progress conflict/replace state instead of silently restoring the default name.
+        name.setValue(retainedName);
+        name.setResponder(ignored -> invalidateReplacement(false));
         addRenderableWidget(name);
 
         // The save policy is one complete row: it is a setting, not a peer of the
         // primary Save action. Save and Cancel then form the second action row.
         modeButton = addRenderableWidget(Button.builder(modeLabel(), button -> {
+            invalidateReplacement(true);
             mode = mode == BlueprintSaveMode.BLOCKS_ONLY ? BlueprintSaveMode.FULL : BlueprintSaveMode.BLOCKS_ONLY;
             button.setMessage(modeLabel());
         }).bounds(left, panelTop + 65, 300, 22).build());
@@ -61,6 +72,24 @@ public final class BlueprintCaptureScreen extends Screen {
         if (saving) return;
         try {
             String normalized = BlueprintNames.normalize(name.getValue());
+            if (pendingReplacement != null
+                    && normalized.equals(submittedName) && mode == submittedMode) {
+                saveCaptured(pendingReplacement, ClientBlueprintLibrary.ConflictPolicy.REPLACE);
+                return;
+            }
+            pendingReplacement = null;
+            if (capturedBlueprint != null && mode == submittedMode) {
+                // Renaming does not change any server-authoritative world data. Reuse the
+                // capture already returned for this dialog instead of immediately hitting the
+                // capture cooldown again after a name conflict.
+                submittedName = normalized;
+                BlueprintData renamed = capturedBlueprint.withIdentity(capturedBlueprint.id(), normalized);
+                saveCaptured(renamed, ClientBlueprintLibrary.ConflictPolicy.FAIL);
+                return;
+            }
+            capturedBlueprint = null;
+            submittedName = normalized;
+            submittedMode = mode;
             saving = true;
             status = Component.translatable(
                     "screen.mydimension.realmwright.blueprint.saving").getString();
@@ -77,7 +106,17 @@ public final class BlueprintCaptureScreen extends Screen {
     /** Receives the one server-authoritative capture and saves it without opening another dialog. */
     public void acceptCapture(BlueprintData captured) {
         if (!saving) return;
-        library.saveAsync(captured, ClientBlueprintLibrary.ConflictPolicy.FAIL)
+        capturedBlueprint = captured;
+        saveCaptured(captured, ClientBlueprintLibrary.ConflictPolicy.FAIL);
+    }
+
+    private void saveCaptured(BlueprintData captured, ClientBlueprintLibrary.ConflictPolicy policy) {
+        capturedBlueprint = captured;
+        saving = true;
+        status = Component.translatable(
+                "screen.mydimension.realmwright.blueprint.saving").getString();
+        updateActiveState();
+        library.saveAsync(captured, policy)
                 .whenComplete((entry, failure) -> Minecraft.getInstance().execute(() -> {
                     if (failure == null) {
                         if (minecraft != null && minecraft.screen == this) minecraft.setScreen(parent);
@@ -85,6 +124,7 @@ public final class BlueprintCaptureScreen extends Screen {
                     }
                     Throwable root = rootCause(failure);
                     if (root instanceof ClientBlueprintLibrary.NameConflictException conflict) {
+                        pendingReplacement = captured;
                         status = Component.translatable(
                                 "screen.mydimension.realmwright.blueprint.name_conflict",
                                 conflict.existingName()).getString();
@@ -99,6 +139,8 @@ public final class BlueprintCaptureScreen extends Screen {
 
     /** Keeps transfer/capture failures visible in this same save dialog. */
     public void captureFailed(String message) {
+        capturedBlueprint = null;
+        pendingReplacement = null;
         status = message == null || message.isBlank()
                 ? Component.translatable("screen.mydimension.realmwright.blueprint.save_failed").getString()
                 : message;
@@ -109,8 +151,22 @@ public final class BlueprintCaptureScreen extends Screen {
     private void updateActiveState() {
         if (name != null) name.setEditable(!saving);
         if (modeButton != null) modeButton.active = !saving;
-        if (saveButton != null) saveButton.active = !saving;
+        if (saveButton != null) {
+            saveButton.active = !saving;
+            saveButton.setMessage(Component.translatable(pendingReplacement == null
+                    ? "screen.mydimension.realmwright.blueprint.save"
+                    : "screen.mydimension.realmwright.blueprint.replace"));
+        }
         if (cancelButton != null) cancelButton.active = !saving;
+    }
+
+    private void invalidateReplacement(boolean discardCapture) {
+        if (saving) return;
+        if (discardCapture) capturedBlueprint = null;
+        if (pendingReplacement == null) return;
+        pendingReplacement = null;
+        status = "";
+        updateActiveState();
     }
 
     private Component modeLabel() {

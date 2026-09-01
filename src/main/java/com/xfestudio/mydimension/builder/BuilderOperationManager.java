@@ -9,6 +9,7 @@ import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.sounds.SoundSource;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.BlockItem;
@@ -55,6 +56,16 @@ public final class BuilderOperationManager {
     }
 
     public static Result executeSurface(ServerPlayer player, ItemStack scepter, BlockHitResult hit) {
+        return executeSurface(player, scepter, hit, false);
+    }
+
+    /** Used by the C2S handler after {@link BuilderReachValidator#validatedHit} already ray-validated it. */
+    public static Result executeValidatedSurface(ServerPlayer player, ItemStack scepter, BlockHitResult hit) {
+        return executeSurface(player, scepter, hit, true);
+    }
+
+    private static Result executeSurface(ServerPlayer player, ItemStack scepter, BlockHitResult hit,
+                                         boolean reachAlreadyValidated) {
         if (!BuilderRuntime.settings().enabled()) return Result.disabled();
         if (PendingBuildData.get(player.getServer()).get(player.getUUID()) != null
                 || com.xfestudio.mydimension.builder.blueprint.BlueprintTaskManager.get(player.getServer())
@@ -62,16 +73,10 @@ public final class BuilderOperationManager {
             return Result.rejected("message.mydimension.builder.active_task_exists");
         }
         BuilderMode mode = RealmwrightData.mode(scepter);
-        UUID scepterId = RealmwrightData.id(scepter);
-        long now = player.getServer().overworld().getGameTime();
-        // Repeated click packets are rejected before ray checks, BFS planning, inventory scans,
-        // history sizing and world snapshots.  The first request has no delay.
-        if (BuilderSurfaceRateLimiter.isCoolingDown(player.getServer(), player.getUUID(), scepterId,
-                mode, now)) {
-            return Result.throttled();
-        }
         ServerLevel level = player.serverLevel();
-        if (!validReachAndSight(player, hit)) return Result.rejected("message.mydimension.builder.out_of_reach");
+        if (!reachAlreadyValidated && !validReachAndSight(player, hit)) {
+            return Result.rejected("message.mydimension.builder.out_of_reach");
+        }
 
         int requested = mode == BuilderMode.BUILD
                 ? RealmwrightData.buildLimit(scepter, BuilderRuntime.settings().maxBuildLimit())
@@ -85,15 +90,10 @@ public final class BuilderOperationManager {
         SurfacePlanner.Plan plan = SurfacePlanner.plan(level, hit.getBlockPos(), hit.getDirection(), mode,
                 RealmwrightData.matchMode(scepter), limit, override);
         if (plan.candidates().isEmpty()) return Result.rejected("message.mydimension.builder.nothing_to_do");
-        if (!BuilderSurfaceRateLimiter.tryAcquire(player.getServer(), player.getUUID(), scepterId, mode, now,
-                plan.candidates().size(), BuilderRuntime.settings().editsPerTick())) {
-            return Result.throttled();
-        }
-
         List<SurfacePlanner.Candidate> locked = lockSurfaceStates(player, plan.candidates(),
                 hit.getDirection(), mode);
         return executeImmediateSurface(player, scepter, mode, locked, hit.getDirection(),
-                UUID.randomUUID(), plan.truncated());
+                UUID.randomUUID(), plan.truncated(), RealmwrightData.recordsHistory(scepter), false, false);
     }
 
     public static Result resumePending(ServerPlayer player, ItemStack scepter) {
@@ -113,14 +113,9 @@ public final class BuilderOperationManager {
                 .map(entry -> new SurfacePlanner.Candidate(entry.pos(), entry.pos(), entry.state(), 0)).toList();
         BuilderMode mode = task.type() == BuilderTransaction.Type.DEMOLISH
                 ? BuilderMode.DEMOLISH : BuilderMode.BUILD;
-        long now = player.getServer().overworld().getGameTime();
-        UUID scepterId = RealmwrightData.id(scepter);
-        if (!BuilderSurfaceRateLimiter.tryAcquire(player.getServer(), player.getUUID(), scepterId,
-                mode, now, candidates.size(), BuilderRuntime.settings().editsPerTick())) {
-            return Result.throttled();
-        }
+        boolean captureHistory = task.resolveRecordHistory(RealmwrightData.recordsHistory(scepter));
         return executeImmediateSurface(player, scepter, mode, candidates, Direction.UP,
-                task.transactionId(), false);
+                task.transactionId(), false, captureHistory, true, task.soundPlayed());
     }
 
     /**
@@ -132,10 +127,15 @@ public final class BuilderOperationManager {
                                                   BuilderMode mode,
                                                   List<SurfacePlanner.Candidate> candidates,
                                                   Direction face, UUID transactionId,
-                                                  boolean truncated) {
+                                                  boolean truncated, boolean captureHistory,
+                                                  boolean continuation, boolean soundAlreadyPlayed) {
         BuilderTransaction.Type type = mode == BuilderMode.BUILD
                 ? BuilderTransaction.Type.BUILD : BuilderTransaction.Type.DEMOLISH;
-        boolean captureHistory = RealmwrightData.recordsHistory(scepter);
+        if (captureHistory && continuation
+                && !validateContinuationPrefix(player, scepter, transactionId)) {
+            return new Result(0, 0, 0, truncated,
+                    "message.mydimension.builder.continuation_world_conflict", true);
+        }
         if (captureHistory && !prepareHistory(player, scepter, transactionId, type,
                 candidates, face, false, Map.of())) {
             return new Result(0, 0, 0, truncated,
@@ -146,22 +146,85 @@ public final class BuilderOperationManager {
                 ? build(player, scepter, candidates, face, transactionId, false, Map.of(), captureHistory)
                 : demolish(player, scepter, candidates, transactionId, captureHistory);
         if (captureHistory) refreshFinalAfterImages(player.serverLevel(), execution);
-        if (captureHistory && !recordTransaction(player, scepter, type, transactionId, execution)) {
+        boolean committed = !captureHistory
+                || recordTransaction(player, scepter, type, transactionId, execution);
+        if (!committed) {
             return new Result(execution.changedCount, execution.missing.size(), execution.blocked,
                     truncated, null, true);
         }
+        if (shouldRefreshMergedHistory(captureHistory, continuation, committed)) {
+            // Appending a continuation can update connection-aware states in the
+            // already recorded prefix (fences, walls, redstone, and similar).
+            // Refresh the combined transaction, not merely this resume batch.
+            BuilderHistoryData.get(player.getServer()).refreshAppliedAfter(player.getUUID(),
+                    RealmwrightData.id(scepter), transactionId, player.serverLevel());
+        }
+        boolean soundPlayed = soundAlreadyPlayed;
+        if (!soundPlayed && execution.sound != null) {
+            playOperationSound(player, execution.sound);
+            soundPlayed = true;
+        }
 
         PendingBuildData pending = PendingBuildData.get(player.getServer());
+        PendingBuildData.Task previous = continuation ? pending.get(player.getUUID()) : null;
+        boolean matchingContinuation = previous != null
+                && previous.transactionId().equals(transactionId)
+                && previous.scepterId().equals(RealmwrightData.id(scepter));
+        PendingCounts counts = pendingCounts(matchingContinuation,
+                matchingContinuation ? previous.completed() : 0,
+                matchingContinuation ? previous.total() : 0,
+                execution.changedCount, execution.missing.size());
         pending.remove(player.getUUID());
         if (!execution.missing.isEmpty()) {
             pending.put(player.getUUID(), new PendingBuildData.Task(RealmwrightData.id(scepter),
-                    transactionId, player.level().dimension(), type, execution.missing,
+                    transactionId, player.level().dimension(), type, captureHistory, true,
+                    soundPlayed, counts.completed(), counts.total(), execution.missing,
                     System.currentTimeMillis()));
         }
         player.displayClientMessage(Component.translatable("message.mydimension.builder.result",
                 execution.changedCount, execution.missing.size(), execution.blocked), true);
+        // With history disabled and no pending cells, the world and inventories already synchronize
+        // through vanilla. Avoid rebuilding/sorting history, resolving every anchor and emitting an
+        // empty workflow preview after every ordinary click.
+        boolean synchronizeBuilderState = shouldSynchronizeBuilderState(
+                captureHistory, execution.missing.size());
         return new Result(execution.changedCount, execution.missing.size(), execution.blocked,
-                truncated, null, true);
+                truncated, null, synchronizeBuilderState);
+    }
+
+    static boolean shouldRefreshMergedHistory(boolean captureHistory, boolean continuation,
+                                              boolean committed) {
+        return captureHistory && continuation && committed;
+    }
+
+    static boolean shouldSynchronizeBuilderState(boolean captureHistory, int missingBlocks) {
+        return captureHistory || missingBlocks > 0;
+    }
+
+    private static boolean validateContinuationPrefix(ServerPlayer player, ItemStack scepter,
+                                                      UUID transactionId) {
+        BuilderHistoryData history = BuilderHistoryData.get(player.getServer());
+        BuilderTransaction prefix = history.peekUndo(player.getUUID(), RealmwrightData.id(scepter));
+        if (prefix == null || !prefix.id().equals(transactionId)) return true;
+        if (prefix.matchesAppliedAfter(player.serverLevel())) return true;
+        history.conflictApplied(player.getUUID(), RealmwrightData.id(scepter), transactionId);
+        return false;
+    }
+
+    private static int saturatedCount(int left, int right) {
+        return (int) Math.min(Integer.MAX_VALUE, (long) Math.max(0, left) + Math.max(0, right));
+    }
+
+    static PendingCounts pendingCounts(boolean matchingContinuation, int previousCompleted,
+                                       int previousTotal, int changed, int missing) {
+        int completed = matchingContinuation
+                ? saturatedCount(previousCompleted, changed) : Math.max(0, changed);
+        int total = matchingContinuation ? Math.max(0, previousTotal)
+                : saturatedCount(changed, missing);
+        return new PendingCounts(completed, Math.max(completed, total));
+    }
+
+    record PendingCounts(int completed, int total) {
     }
 
     public static boolean cancelPending(ServerPlayer player, ItemStack scepter) {
@@ -199,6 +262,7 @@ public final class BuilderOperationManager {
         ServerLevel level = player.serverLevel();
         Execution result = new Execution(player.getOffhandItem().copy(), captureHistory);
         List<BuildAttempt> attempts = new ArrayList<>();
+        ItemStack placementSource = player.getOffhandItem().copy();
         boolean free = isFree(player);
         for (SurfacePlanner.Candidate candidate : candidates) {
             try {
@@ -207,7 +271,9 @@ public final class BuilderOperationManager {
                         : candidate.desiredState();
                 BlockState existing = level.getBlockState(pos);
                 if (existing.equals(desired)) continue;
-                if (!validBuildEnvelope(player, pos, desired, existing)) {
+                // Keep this pass cheap.  The authoritative collision/envelope check runs exactly
+                // once immediately before the edit, after any earlier mod callbacks in this batch.
+                if (!validStaticBuildEnvelope(player, pos, desired, existing)) {
                     result.blocked++;
                     continue;
                 }
@@ -216,11 +282,25 @@ public final class BuilderOperationManager {
                     result.blocked++;
                     continue;
                 }
-                attempts.add(new BuildAttempt(candidate, desired, cost, blockEntityTags.get(pos)));
+                ItemStack placementStack = placementStack(placementSource, desired, cost);
+                attempts.add(new BuildAttempt(candidate, desired, cost, placementStack,
+                        blockEntityTags.get(pos)));
             } catch (Throwable throwable) {
                 result.blocked++;
                 MyDimension.LOGGER.warn("Builder rejected a placement candidate after a mod callback failed",
                         throwable);
+            }
+        }
+
+        Map<BlockPos, WorldDelta.Snapshot> batchBeforeImages = Map.of();
+        if (captureHistory) {
+            try {
+                batchBeforeImages = snapshotBuildBatchArea(level, attempts);
+            } catch (Throwable throwable) {
+                result.blocked += attempts.size();
+                MyDimension.LOGGER.warn("Builder rejected a build batch because its neighbour history "
+                        + "could not be captured", throwable);
+                return result;
             }
         }
 
@@ -241,6 +321,7 @@ public final class BuilderOperationManager {
                     BuilderMaterials.Extraction extraction = BuilderMaterials.extract(player, scepter,
                             pool.template, pool.requested);
                     pool.available = extraction.count();
+                    pool.extracted = pool.available;
                 } catch (Throwable throwable) {
                     pool.available = 0;
                     MyDimension.LOGGER.warn("Builder material extraction failed; this item is left pending",
@@ -252,6 +333,17 @@ public final class BuilderOperationManager {
         List<BuildAttempt> unresolved = processWithSingleRetry(attempts,
                 attempt -> placeBuildAttempt(player, pools, free, result, attempt));
         result.blocked += unresolved.size();
+        stabilizeBuildBatch(level, result.successfulBuildPositions);
+        if (captureHistory && !captureStableBuildHistory(level, batchBeforeImages, result)) {
+            restoreSnapshots(level, batchBeforeImages);
+            for (SupplyPool pool : pools) pool.available = pool.extracted;
+            result.changed.clear();
+            result.missing.clear();
+            result.successfulBuildPositions.clear();
+            result.sound = null;
+            result.blocked += result.changedCount;
+            result.changedCount = 0;
+        }
         for (SupplyPool pool : pools) {
             if (pool.available > 0) {
                 dropOverflow(player, transactionId, BuilderMaterials.insert(player, scepter,
@@ -260,6 +352,165 @@ public final class BuilderOperationManager {
         }
         result.offhandAfter = player.getOffhandItem().copy();
         return result;
+    }
+
+    private static ItemStack placementStack(ItemStack offhand, BlockState desired, ItemStack cost) {
+        if (offhand.getItem() instanceof BlockItem blockItem
+                && blockItem.getBlock() == desired.getBlock()) {
+            return offhand.copyWithCount(1);
+        }
+        return cost.copyWithCount(1);
+    }
+
+    private static Map<BlockPos, WorldDelta.Snapshot> snapshotBuildBatchArea(
+            ServerLevel level, List<BuildAttempt> attempts) {
+        List<BlockPos> targets = attempts.stream().map(attempt -> attempt.candidate.target()).toList();
+        Map<BlockPos, WorldDelta.Snapshot> snapshots = new java.util.LinkedHashMap<>();
+        for (BlockPos pos : buildStabilizationPositions(targets)) {
+            if (level.hasChunkAt(pos)) snapshots.put(pos, WorldDelta.snapshot(level, pos));
+        }
+        return snapshots;
+    }
+
+    /** Target and direct-neighbour set used by the post-placement compatibility pass. */
+    static List<BlockPos> buildStabilizationPositions(Iterable<BlockPos> targets) {
+        java.util.LinkedHashSet<BlockPos> positions = new java.util.LinkedHashSet<>();
+        for (BlockPos target : targets) {
+            BlockPos immutable = target.immutable();
+            positions.add(immutable);
+            for (Direction direction : Direction.values()) {
+                positions.add(immutable.relative(direction).immutable());
+            }
+        }
+        return List.copyOf(positions);
+    }
+
+    /** Each directed target/source pair appears once even when two successful targets touch. */
+    static List<NeighborNotification> buildNeighborNotifications(Iterable<BlockPos> targets) {
+        java.util.LinkedHashSet<BlockPos> uniqueTargets = new java.util.LinkedHashSet<>();
+        targets.forEach(pos -> uniqueTargets.add(pos.immutable()));
+        java.util.LinkedHashSet<NeighborNotification> notifications = new java.util.LinkedHashSet<>();
+        for (BlockPos target : uniqueTargets) {
+            for (Direction direction : Direction.values()) {
+                BlockPos neighbour = target.relative(direction).immutable();
+                notifications.add(new NeighborNotification(target, neighbour));
+                notifications.add(new NeighborNotification(neighbour, target));
+            }
+        }
+        return List.copyOf(notifications);
+    }
+
+    /**
+     * Completes the normal BlockItem neighbour lifecycle once per deduplicated batch area. This is
+     * intentionally after all placements so multiblocks such as Create vaults see their complete
+     * neighbourhood, while the ordinary per-block protection event remains authoritative.
+     */
+    private static void stabilizeBuildBatch(ServerLevel level, Iterable<BlockPos> successfulTargets) {
+        java.util.LinkedHashSet<BlockPos> targetSet = new java.util.LinkedHashSet<>();
+        successfulTargets.forEach(pos -> targetSet.add(pos.immutable()));
+        List<BlockPos> targets = List.copyOf(targetSet);
+        if (targets.isEmpty()) return;
+        List<BlockPos> affected = buildStabilizationPositions(targets);
+        Map<BlockPos, BlockState> beforeStates = new java.util.LinkedHashMap<>();
+        Map<BlockPos, BlockEntitySyncState> beforeBlockEntities = new java.util.LinkedHashMap<>();
+
+        for (BlockPos pos : affected) {
+            if (!validLoadedPosition(level, pos)) continue;
+            beforeStates.put(pos, level.getBlockState(pos));
+            // Successful targets are always synchronized exactly once below, so serializing their
+            // potentially huge machine/inventory update tags before and after would buy nothing.
+            if (requiresBlockEntityComparison(targetSet.contains(pos))) {
+                beforeBlockEntities.put(pos, blockEntitySyncState(level, pos));
+            }
+        }
+
+        for (BlockPos pos : affected) {
+            if (!beforeStates.containsKey(pos)) continue;
+            try {
+                BlockState current = level.getBlockState(pos);
+                BlockState shaped = Block.updateFromNeighbourShapes(current, level, pos);
+                // Deliver the deduplicated directed callbacks below. UPDATE_KNOWN_SHAPE avoids
+                // setBlock recursively emitting the same neighbour relationship a second time.
+                if (!shaped.equals(current)) level.setBlock(pos, shaped, Block.UPDATE_KNOWN_SHAPE);
+            } catch (Throwable throwable) {
+                MyDimension.LOGGER.warn("Builder neighbour-shape stabilization failed at {}", pos, throwable);
+            }
+        }
+
+        for (NeighborNotification notification : buildNeighborNotifications(targets)) {
+            if (!validLoadedPosition(level, notification.target)
+                    || !validLoadedPosition(level, notification.source)) continue;
+            try {
+                Block sourceBlock = level.getBlockState(notification.source).getBlock();
+                level.neighborChanged(notification.target, sourceBlock, notification.source);
+            } catch (Throwable throwable) {
+                MyDimension.LOGGER.warn("Builder neighbour callback stabilization failed for {} <- {}",
+                        notification.target, notification.source, throwable);
+            }
+        }
+
+        for (BlockPos pos : affected) {
+            BlockState beforeState = beforeStates.get(pos);
+            if (beforeState == null || !validLoadedPosition(level, pos)) continue;
+            try {
+                BlockState current = level.getBlockState(pos);
+                boolean successfulTarget = targetSet.contains(pos);
+                boolean stateChanged = !beforeState.equals(current);
+                boolean blockEntityChanged = false;
+                if (requiresBlockEntityComparison(successfulTarget)) {
+                    BlockEntitySyncState beforeBlockEntity = beforeBlockEntities.get(pos);
+                    BlockEntitySyncState afterBlockEntity = blockEntitySyncState(level, pos);
+                    blockEntityChanged = beforeBlockEntity == null
+                            || !beforeBlockEntity.equivalent(afterBlockEntity);
+                }
+                if (!successfulTarget && !stateChanged && !blockEntityChanged) continue;
+                BlockEntity blockEntity = level.getBlockEntity(pos);
+                if (blockEntity != null) blockEntity.setChanged();
+                level.sendBlockUpdated(pos, beforeState, current, Block.UPDATE_CLIENTS);
+            } catch (Throwable throwable) {
+                MyDimension.LOGGER.warn("Builder stabilization sync failed at {}", pos, throwable);
+            }
+        }
+    }
+
+    static boolean requiresBlockEntityComparison(boolean successfulTarget) {
+        return !successfulTarget;
+    }
+
+    private static boolean validLoadedPosition(ServerLevel level, BlockPos pos) {
+        return pos.getY() >= level.getMinBuildHeight() && pos.getY() < level.getMaxBuildHeight()
+                && level.hasChunkAt(pos);
+    }
+
+    private static BlockEntitySyncState blockEntitySyncState(ServerLevel level, BlockPos pos) {
+        BlockEntity blockEntity = level.getBlockEntity(pos);
+        if (blockEntity == null) return new BlockEntitySyncState(null, null, true);
+        try {
+            return new BlockEntitySyncState(blockEntity.getType(), blockEntity.getUpdateTag().copy(), true);
+        } catch (Throwable throwable) {
+            // An opaque modded BE cannot be compared safely. Sync it conservatively only when it is
+            // part of the affected area, while still avoiding unconditional setChanged for normal BEs.
+            return new BlockEntitySyncState(blockEntity.getType(), null, false);
+        }
+    }
+
+    private static boolean captureStableBuildHistory(ServerLevel level,
+                                                     Map<BlockPos, WorldDelta.Snapshot> beforeImages,
+                                                     Execution result) {
+        try {
+            result.changed.clear();
+            for (Map.Entry<BlockPos, WorldDelta.Snapshot> entry : beforeImages.entrySet()) {
+                WorldDelta.Snapshot before = entry.getValue();
+                WorldDelta.Snapshot after = WorldDelta.snapshot(level, entry.getKey());
+                if (before.equals(after)) continue;
+                result.changed.add(new WorldDelta(entry.getKey(), before.state(), before.blockEntity(),
+                        after.state(), after.blockEntity()));
+            }
+            return true;
+        } catch (Throwable throwable) {
+            MyDimension.LOGGER.warn("Builder could not capture stabilized build history", throwable);
+            return false;
+        }
     }
 
     /**
@@ -300,11 +551,9 @@ public final class BuilderOperationManager {
         }
 
         BlockState beforeState;
-        WorldDelta.Snapshot before = null;
         BlockSnapshot forgeSnapshot;
         try {
             beforeState = level.getBlockState(pos);
-            if (result.captureHistory) before = WorldDelta.snapshot(level, pos);
             forgeSnapshot = BlockSnapshot.create(level.dimension(), level, pos);
         } catch (Throwable throwable) {
             result.blocked++;
@@ -323,6 +572,12 @@ public final class BuilderOperationManager {
                     placed = false;
                 }
             }
+            if (placed && attempt.placementStack.getItem() instanceof BlockItem blockItem
+                    && blockItem.getBlock() == desired.getBlock()) {
+                BlockState placedState = level.getBlockState(pos);
+                placedState.getBlock().setPlacedBy(level, pos, placedState, player,
+                        attempt.placementStack.copy());
+            }
             if (placed && attempt.blockEntityTag != null
                     && !applyBlockEntityTag(player, pos, attempt.blockEntityTag)) {
                 forgeSnapshot.restore(true, false);
@@ -331,7 +586,7 @@ public final class BuilderOperationManager {
             // A placement callback may synchronously replace or consume the block (for example a
             // powered TNT). Such side effects are not represented by this transaction, so never debit
             // material or record an air-to-air delta as a successful placement.
-            if (placed && !level.getBlockState(pos).equals(desired)) {
+            if (placed && !level.getBlockState(pos).is(desired.getBlock())) {
                 forgeSnapshot.restore(true, false);
                 placed = false;
             }
@@ -345,28 +600,15 @@ public final class BuilderOperationManager {
             result.blocked++;
             return true;
         }
-        WorldDelta.Snapshot after = null;
-        if (result.captureHistory) {
-            try {
-                after = WorldDelta.snapshot(level, pos);
-            } catch (Throwable throwable) {
-                try { forgeSnapshot.restore(true, false); } catch (Throwable ignored) { }
-                result.blocked++;
-                MyDimension.LOGGER.warn("Builder rolled back placement at {} because its after-image failed",
-                        pos, throwable);
-                return true;
-            }
-        }
         if (pool != null) {
             pool.available -= costCount;
             if (result.captureHistory) {
                 addLedgerStack(result.debits, pool.template.copyWithCount(costCount));
             }
         }
-        if (result.captureHistory) {
-            result.changed.add(new WorldDelta(pos, before.state(), before.blockEntity(),
-                    after.state(), after.blockEntity()));
-        }
+        BlockState successfulState = level.getBlockState(pos);
+        result.successfulBuildPositions.add(pos.immutable());
+        result.captureSound(pos, successfulState);
         result.changedCount++;
         return true;
     }
@@ -390,7 +632,9 @@ public final class BuilderOperationManager {
                                       boolean captureHistory) {
         ServerLevel level = player.serverLevel();
         Execution result = new Execution(player.getOffhandItem().copy(), captureHistory);
-        for (SurfacePlanner.Candidate candidate : candidates) {
+        List<PositionedDrop> deferredDrops = captureHistory ? List.of() : new ArrayList<>();
+        try {
+            for (SurfacePlanner.Candidate candidate : candidates) {
             BlockPos pos = candidate.target();
             BlockState state;
             ItemStack toolBeforeBlock;
@@ -426,12 +670,12 @@ public final class BuilderOperationManager {
             try {
                 if (tool.canDrop) {
                     BuilderDropCapture.CaptureResult<Boolean> captured = BuilderDropCapture.capture(
-                            () -> level.destroyBlock(pos, false, player));
+                            () -> level.removeBlock(pos, false));
                     removed = captured.value();
                     capturedDrops = captured.drops();
                 } else if (tool.recognized) {
                     removed = BuilderDropCapture.discardEntities(
-                            () -> level.destroyBlock(pos, false, player));
+                            () -> level.removeBlock(pos, false));
                     capturedDrops = List.of();
                 } else {
                     removed = removeWithoutBreakEffect(level, pos);
@@ -464,19 +708,38 @@ public final class BuilderOperationManager {
                     continue;
                 }
             }
+            result.captureSound(pos, state);
 
             if (tool.canDrop) {
                 List<ItemStack> drops = new ArrayList<>(normalDrops.size() + capturedDrops.size());
                 normalDrops.forEach(stack -> drops.add(stack.copy()));
                 capturedDrops.forEach(stack -> drops.add(stack.copy()));
-                if (captureHistory) drops.forEach(drop -> addLedgerStack(result.credits, drop));
-                dropOverflowAt(level, pos, transactionId, BuilderMaterials.insert(player, scepter, drops));
+                if (captureHistory) {
+                    drops.forEach(drop -> addLedgerStack(result.credits, drop));
+                    dropOverflowAt(level, pos, transactionId,
+                            BuilderMaterials.insert(player, scepter, drops));
+                } else {
+                    // History-off is the low-overhead mode.  Keep each source position, but defer
+                    // remote storage until the batch is complete so bound chunks/capabilities are
+                    // resolved once instead of once per block and per drop stack.
+                    drops.stream().filter(drop -> !drop.isEmpty())
+                            .forEach(drop -> deferredDrops.add(new PositionedDrop(pos.immutable(), drop.copy())));
+                }
             }
             // Settle the Nth block's drops with the pre-damage tool, then apply exactly one durability point.
             // If this breaks the tool, only subsequent blocks lose harvesting eligibility.
+            boolean stopAfterCurrentBlock = false;
             if (tool.recognized && !isFree(player)) {
-                player.getOffhandItem().hurtAndBreak(1, player,
-                        broken -> broken.broadcastBreakEvent(InteractionHand.OFF_HAND));
+                try {
+                    player.getOffhandItem().hurtAndBreak(1, player,
+                            broken -> broken.broadcastBreakEvent(InteractionHand.OFF_HAND));
+                } catch (RuntimeException exception) {
+                    // Finish accounting this already removed block, but do not let a tool that
+                    // refuses durability damage harvest the rest of the batch for free.
+                    MyDimension.LOGGER.warn("Builder tool damage callback failed after removing {}", pos,
+                            exception);
+                    stopAfterCurrentBlock = true;
+                }
             }
             if (captureHistory) {
                 for (Map.Entry<BlockPos, WorldDelta.Snapshot> entry : beforeImages.entrySet()) {
@@ -489,9 +752,35 @@ public final class BuilderOperationManager {
             } else {
                 result.changedCount++;
             }
+            if (stopAfterCurrentBlock) break;
+            }
+        } finally {
+            if (!deferredDrops.isEmpty()) {
+                settleDemolitionDrops(player, scepter, transactionId, deferredDrops);
+            }
         }
         result.offhandAfter = player.getOffhandItem().copy();
         return result;
+    }
+
+    /**
+     * Stores every demolition output in one remote material session while
+     * preserving the original per-stack call semantics and source position.
+     */
+    private static void settleDemolitionDrops(ServerPlayer player, ItemStack scepter,
+                                               UUID transactionId, List<PositionedDrop> drops) {
+        List<ItemStack> offered = drops.stream().map(drop -> drop.stack.copy()).toList();
+        // Every harvested block was settled before damaging its tool in the original per-block
+        // order.  Reserving the offhand here preserves that rule if the tool broke during the batch.
+        List<ItemStack> remainders = BuilderMaterials.insertAlignedPreservingOffhand(
+                player, scepter, offered);
+        ServerLevel level = player.serverLevel();
+        for (int index = 0; index < drops.size(); index++) {
+            ItemStack remainder = remainders.get(index);
+            if (!remainder.isEmpty()) {
+                dropOverflowAt(level, drops.get(index).pos, transactionId, List.of(remainder));
+            }
+        }
     }
 
     /**
@@ -637,15 +926,21 @@ public final class BuilderOperationManager {
 
     private static boolean validBuildEnvelope(ServerPlayer player, BlockPos pos, BlockState desired,
                                               BlockState existing) {
+        if (!validStaticBuildEnvelope(player, pos, desired, existing)) return false;
+        // Match normal BlockItem placement semantics: no solid collision shape may intersect any
+        // player, mob, vehicle or other collidable entity at the target, not merely the operator.
+        return player.serverLevel().isUnobstructed(desired, pos, CollisionContext.empty());
+    }
+
+    private static boolean validStaticBuildEnvelope(ServerPlayer player, BlockPos pos, BlockState desired,
+                                                     BlockState existing) {
         ServerLevel level = player.serverLevel();
         WorldBorder border = level.getWorldBorder();
         if (pos.getY() < level.getMinBuildHeight() || pos.getY() >= level.getMaxBuildHeight()
                 || !border.isWithinBounds(pos) || !existing.canBeReplaced()
                 || desired.is(BuilderTags.CONSTRUCTION_PROTECTED)
                 || desired.is(BuilderTags.TRANSACTION_UNSAFE)) return false;
-        // Match normal BlockItem placement semantics: no solid collision shape may intersect any
-        // player, mob, vehicle or other collidable entity at the target, not merely the operator.
-        return level.isUnobstructed(desired, pos, CollisionContext.empty());
+        return true;
     }
 
     /**
@@ -704,31 +999,35 @@ public final class BuilderOperationManager {
         return player.isCreative() && BuilderRuntime.settings().creativeBypassesCosts();
     }
 
-    /** Executes one rate-limited part of an already validated blueprint. */
+    /** Executes one part of an already validated blueprint. */
     public static BlueprintBatchResult executeBlueprintBatch(ServerPlayer player, ItemStack scepter,
             List<com.xfestudio.mydimension.builder.blueprint.BlueprintPlacementPlan.PlannedBlock> blocks,
-            UUID transactionId) {
+            UUID transactionId, boolean captureHistory) {
         List<SurfacePlanner.Candidate> candidates = new ArrayList<>(blocks.size());
         Map<BlockPos, net.minecraft.nbt.CompoundTag> blockEntities = new java.util.HashMap<>();
         for (var block : blocks) {
             candidates.add(new SurfacePlanner.Candidate(block.worldPos(), block.worldPos(), block.state(), 0));
             if (block.blockEntityTag() != null) blockEntities.put(block.worldPos(), block.blockEntityTag());
         }
-        if (!prepareHistory(player, scepter, transactionId, BuilderTransaction.Type.BLUEPRINT, candidates,
-                Direction.UP, false, blockEntities)) {
+        if (captureHistory && !prepareHistory(player, scepter, transactionId,
+                BuilderTransaction.Type.BLUEPRINT, candidates, Direction.UP, false, blockEntities)) {
             List<PendingBuildData.Entry> deferred = blocks.stream()
                     .map(block -> new PendingBuildData.Entry(block.worldPos(), block.state(), block.blockEntityTag()))
                     .toList();
             player.displayClientMessage(Component.translatable(
                     "message.mydimension.builder.history_budget_exceeded"), true);
-            return new BlueprintBatchResult(0, deferred, 0, false);
+            return new BlueprintBatchResult(0, deferred, 0, false, null);
         }
         Execution execution = build(player, scepter, candidates, Direction.UP, transactionId, false,
-                blockEntities, true);
-        boolean committed = recordTransaction(player, scepter, BuilderTransaction.Type.BLUEPRINT, transactionId,
-                execution);
+                blockEntities, captureHistory);
+        boolean committed = true;
+        if (captureHistory) {
+            refreshFinalAfterImages(player.serverLevel(), execution);
+            committed = recordTransaction(player, scepter, BuilderTransaction.Type.BLUEPRINT,
+                    transactionId, execution);
+        }
         return new BlueprintBatchResult(execution.changedCount, List.copyOf(execution.missing), execution.blocked,
-                committed);
+                committed, execution.sound);
     }
 
     private static boolean recordTransaction(ServerPlayer player, ItemStack scepter, BuilderTransaction.Type type,
@@ -830,6 +1129,7 @@ public final class BuilderOperationManager {
                                              Map<BlockPos, net.minecraft.nbt.CompoundTag> blockEntityTags) {
         ServerLevel level = player.serverLevel();
         long estimate = 4_096L + 2L * stackBytes(player.getOffhandItem());
+        java.util.LinkedHashSet<BlockPos> buildTargets = new java.util.LinkedHashSet<>();
         java.util.HashSet<BlockPos> estimatedDemolitionPositions = new java.util.HashSet<>();
         for (SurfacePlanner.Candidate candidate : candidates) {
             if (type == BuilderTransaction.Type.DEMOLISH) {
@@ -854,6 +1154,7 @@ public final class BuilderOperationManager {
             }
 
             BlockPos pos = candidate.target();
+            buildTargets.add(pos.immutable());
             BlockState beforeState = level.getBlockState(pos);
             BlockState afterState = allowOffhandOverride ? desiredState(player, candidate, face)
                     : candidate.desiredState();
@@ -879,6 +1180,22 @@ public final class BuilderOperationManager {
             entry = saturatedAdd(entry, stackBytes(constructionCost(afterState)) + 128L);
             entry = saturatedAdd(entry, tagBytes(afterBlockEntity));
             estimate = saturatedAdd(estimate, entry);
+        }
+        if (type != BuilderTransaction.Type.DEMOLISH && !buildTargets.isEmpty()) {
+            for (BlockPos neighbour : buildStabilizationPositions(buildTargets)) {
+                if (buildTargets.contains(neighbour) || !level.hasChunkAt(neighbour)) continue;
+                BlockState state = level.getBlockState(neighbour);
+                BlockEntity blockEntity = level.getBlockEntity(neighbour);
+                if (blockEntity == null) {
+                    estimate = saturatedAdd(estimate, ordinaryHistoryEntryBytes(type));
+                    continue;
+                }
+                WorldDelta.Snapshot snapshot = WorldDelta.snapshot(level, neighbour);
+                WorldDelta predicted = new WorldDelta(neighbour, state, snapshot.blockEntity(),
+                        state, snapshot.blockEntity());
+                estimate = saturatedAdd(estimate,
+                        512L + Integer.toUnsignedLong(predicted.save().sizeInBytes()));
+            }
         }
         return estimate;
     }
@@ -970,11 +1287,25 @@ public final class BuilderOperationManager {
         }
     }
 
+    public static void playOperationSound(ServerPlayer player,
+                                          @javax.annotation.Nullable OperationSound operationSound) {
+        if (operationSound == null) return;
+        try {
+            var soundType = operationSound.state.getSoundType(
+                    player.serverLevel(), operationSound.pos, player);
+            player.serverLevel().playSound(null, operationSound.pos, soundType.getBreakSound(),
+                    SoundSource.BLOCKS, (soundType.getVolume() + 1.0F) * 0.5F,
+                    soundType.getPitch() * 0.8F);
+        } catch (Throwable throwable) {
+            MyDimension.LOGGER.warn("Builder could not play its batch sound at {}",
+                    operationSound.pos, throwable);
+        }
+    }
+
     public record Result(int changed, int missing, int blocked, boolean truncated, String rejectionKey,
                          boolean shouldSynchronize) {
         public static Result disabled() { return rejected("message.mydimension.builder.disabled"); }
         public static Result rejected(String key) { return new Result(0, 0, 0, false, key, false); }
-        public static Result throttled() { return new Result(0, 0, 0, false, null, false); }
         public boolean accepted() { return rejectionKey == null; }
     }
 
@@ -986,30 +1317,65 @@ public final class BuilderOperationManager {
         private final List<PendingBuildData.Entry> missing = new ArrayList<>();
         private final List<ItemStack> debits = new ArrayList<>();
         private final List<ItemStack> credits = new ArrayList<>();
+        private final java.util.LinkedHashSet<BlockPos> successfulBuildPositions =
+                new java.util.LinkedHashSet<>();
         private final ItemStack offhandBefore;
         private final boolean captureHistory;
         private ItemStack offhandAfter = ItemStack.EMPTY;
         private int changedCount;
         private int blocked;
+        @javax.annotation.Nullable private OperationSound sound;
 
         private Execution(ItemStack offhandBefore, boolean captureHistory) {
             this.offhandBefore = offhandBefore;
             this.captureHistory = captureHistory;
         }
+
+        private void captureSound(BlockPos pos, BlockState state) {
+            if (sound == null) sound = new OperationSound(pos, state);
+        }
     }
 
     public record BlueprintBatchResult(int changed, List<PendingBuildData.Entry> missing, int blocked,
-                                       boolean committed) {
+                                       boolean committed, @javax.annotation.Nullable OperationSound sound) {
+    }
+
+    public record OperationSound(BlockPos pos, BlockState state) {
+        public OperationSound {
+            pos = pos.immutable();
+        }
+    }
+
+    record NeighborNotification(BlockPos target, BlockPos source) {
+        NeighborNotification {
+            target = target.immutable();
+            source = source.immutable();
+        }
+    }
+
+    private record BlockEntitySyncState(
+            @javax.annotation.Nullable net.minecraft.world.level.block.entity.BlockEntityType<?> type,
+            @javax.annotation.Nullable net.minecraft.nbt.CompoundTag updateTag,
+            boolean reliable) {
+        private boolean equivalent(@javax.annotation.Nullable BlockEntitySyncState other) {
+            return other != null && reliable && other.reliable && type == other.type
+                    && java.util.Objects.equals(updateTag, other.updateTag);
+        }
     }
 
     private record BuildAttempt(SurfacePlanner.Candidate candidate, BlockState desired, ItemStack cost,
+                                ItemStack placementStack,
                                 net.minecraft.nbt.CompoundTag blockEntityTag) {
+    }
+
+    private record PositionedDrop(BlockPos pos, ItemStack stack) {
     }
 
     private static final class SupplyPool {
         private final ItemStack template;
         private int requested;
         private int available;
+        private int extracted;
 
         private SupplyPool(ItemStack template) {
             this.template = template;

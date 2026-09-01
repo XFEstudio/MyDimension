@@ -1,0 +1,54 @@
+{
+  "credit": "MyDimension animated lower Realmwright orbit ring",
+  "ambientocclusion": false,
+  "gui_light": "side",
+  "render_type": "minecraft:cutout",
+  "textures": {
+    "body": "mydimension:item/realmwright_voidstone",
+    "crystal": "mydimension:item/realmwright_rift_crystal",
+    "particle": "mydimension:item/realmwright_voidstone"
+  },
+  "elements": [
+    {
+      "name": "lower_ring_north", "from": [6.0, -2.5, 4.15], "to": [10.0, -1.5, 5.25],
+      "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#body" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "south": { "uv": [0, 0, 16, 16], "texture": "#body" }, "west": { "uv": [0, 0, 16, 16], "texture": "#body" }, "east": { "uv": [0, 0, 16, 16], "texture": "#body" } }
+    },
+    {
+      "name": "lower_ring_south", "from": [6.0, -2.5, 10.75], "to": [10.0, -1.5, 11.85],
+      "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#body" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#body" }, "south": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "west": { "uv": [0, 0, 16, 16], "texture": "#body" }, "east": { "uv": [0, 0, 16, 16], "texture": "#body" } }
+    },
+    {
+      "name": "lower_ring_west", "from": [4.15, -2.5, 6.0], "to": [5.25, -1.5, 10.0],
+      "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#body" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#body" }, "south": { "uv": [0, 0, 16, 16], "texture": "#body" }, "west": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "east": { "uv": [0, 0, 16, 16], "texture": "#body" } }
+    },
+    {
+      "name": "lower_ring_east", "from": [10.75, -2.5, 6.0], "to": [11.85, -1.5, 10.0],
+      "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#body" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#body" }, "south": { "uv": [0, 0, 16, 16], "texture": "#body" }, "west": { "uv": [0, 0, 16, 16], "texture": "#body" }, "east": { "uv": [0, 0, 16, 16], "texture": "#crystal" } }
+    },
+    {
+      "name": "lower_ring_north_west", "from": [4.43, -2.5, 4.8], "to": [6.27, -1.5, 5.9],
+      "rotation": { "origin": [5.35, -2.0, 5.35], "axis": "y", "angle": -45, "rescale": true },
+      "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#body" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "south": { "uv": [0, 0, 16, 16], "texture": "#body" }, "west": { "uv": [0, 0, 16, 16], "texture": "#body" }, "east": { "uv": [0, 0, 16, 16], "texture": "#body" } }
+    },
+    {
+      "name": "lower_ring_north_east", "from": [9.73, -2.5, 4.8], "to": [11.57, -1.5, 5.9],
+      "rotation": { "origin": [10.65, -2.0, 5.35], "axis": "y", "angle": 45, "rescale": true },
+      "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#body" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "south": { "uv": [0, 0, 16, 16], "texture": "#body" }, "west": { "uv": [0, 0, 16, 16], "texture": "#body" }, "east": { "uv": [0, 0, 16, 16], "texture": "#body" } }
+    },
+    {
+      "name": "lower_ring_south_east", "from": [9.73, -2.5, 10.1], "to": [11.57, -1.5, 11.2],
+      "rotation": { "origin": [10.65, -2.0, 10.65], "axis": "y", "angle": -45, "rescale": true },
+      "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#body" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#body" }, "south": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "west": { "uv": [0, 0, 16, 16], "texture": "#body" }, "east": { "uv": [0, 0, 16, 16], "texture": "#body" } }
+    },
+    {
+      "name": "lower_ring_south_west", "from": [4.43, -2.5, 10.1], "to": [6.27, -1.5, 11.2],
+      "rotation": { "origin": [5.35, -2.0, 10.65], "axis": "y", "angle": 45, "rescale": true },
+      "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#body" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#body" }, "south": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "west": { "uv": [0, 0, 16, 16], "texture": "#body" }, "east": { "uv": [0, 0, 16, 16], "texture": "#body" } }
+    },
+    {
+      "name": "lower_ring_orbit_crystal", "from": [10.55, -2.9, 3.95], "to": [12.15, -1.1, 5.55],
+      "rotation": { "origin": [11.35, -2.0, 4.75], "axis": "z", "angle": 45, "rescale": true }, "shade": false,
+      "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "south": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "west": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "east": { "uv": [0, 0, 16, 16], "texture": "#crystal" } }
+    }
+  ]
+}

@@ -45,6 +45,18 @@ public final class PendingBuildData extends SavedData {
         if (tasks.remove(player) != null) setDirty();
     }
 
+    /** Combines new persisted counters with history-derived migration data from legacy tasks. */
+    public static Progress progress(int storedCompleted, int storedTotal, int missing,
+                                    int matchingHistoryCompleted) {
+        int completed = Math.max(Math.max(0, storedCompleted), Math.max(0, matchingHistoryCompleted));
+        int requiredTotal = (int) Math.min(Integer.MAX_VALUE,
+                (long) completed + Math.max(0, missing));
+        return new Progress(completed, Math.max(Math.max(0, storedTotal), requiredTotal));
+    }
+
+    public record Progress(int completed, int total) {
+    }
+
     @Override
     public CompoundTag save(CompoundTag root) {
         ListTag values = new ListTag();
@@ -79,9 +91,12 @@ public final class PendingBuildData extends SavedData {
     }
 
     public record Task(UUID scepterId, UUID transactionId, ResourceKey<Level> dimension,
-                       BuilderTransaction.Type type, List<Entry> missing, long createdAt) {
+                       BuilderTransaction.Type type, boolean recordHistory, boolean historyPolicyKnown,
+                       boolean soundPlayed, int completed, int total, List<Entry> missing, long createdAt) {
         public Task {
             missing = List.copyOf(missing);
+            completed = Math.max(0, completed);
+            total = Math.max(Math.max(0, total), saturatedAdd(completed, missing.size()));
         }
 
         private CompoundTag save() {
@@ -90,6 +105,9 @@ public final class PendingBuildData extends SavedData {
             tag.putUUID("Transaction", transactionId);
             tag.putString("Dimension", dimension.location().toString());
             tag.putString("Type", type.name());
+            if (historyPolicyKnown) tag.putBoolean("RecordHistory", recordHistory);
+            if (soundPlayed) tag.putBoolean("SoundPlayed", true);
+            writeProgress(tag, completed, total);
             tag.putLong("CreatedAt", createdAt);
             ListTag entries = new ListTag();
             for (Entry entry : missing) {
@@ -117,9 +135,70 @@ public final class PendingBuildData extends SavedData {
             BuilderTransaction.Type type;
             try { type = BuilderTransaction.Type.valueOf(tag.getString("Type")); }
             catch (IllegalArgumentException ignored) { type = BuilderTransaction.Type.BUILD; }
+            int completed = readCompleted(tag);
+            int total = readTotal(tag, missing.size());
+            boolean policyKnown = loadedHistoryPolicyKnown(tag, type);
+            boolean recordHistory = loadedRecordHistory(tag, type);
             return new Task(tag.hasUUID("Scepter") ? tag.getUUID("Scepter") : UUID.randomUUID(),
                     tag.hasUUID("Transaction") ? tag.getUUID("Transaction") : UUID.randomUUID(),
-                    dimension, type, missing, tag.getLong("CreatedAt"));
+                    dimension, type,
+                    recordHistory, policyKnown,
+                    tag.getBoolean("SoundPlayed"), completed, total, missing, tag.getLong("CreatedAt"));
+        }
+
+        static void writePolicyAndProgress(CompoundTag tag, boolean recordHistory,
+                                           int completed, int total) {
+            tag.putBoolean("RecordHistory", recordHistory);
+            writeProgress(tag, completed, total);
+        }
+
+        private static void writeProgress(CompoundTag tag, int completed, int total) {
+            tag.putInt("Completed", Math.max(0, completed));
+            tag.putInt("Total", Math.max(0, total));
+        }
+
+        static boolean readRecordHistory(CompoundTag tag) {
+            return tag.contains("RecordHistory", Tag.TAG_BYTE) && tag.getBoolean("RecordHistory");
+        }
+
+        static boolean readHistoryPolicyKnown(CompoundTag tag) {
+            return tag.contains("RecordHistory", Tag.TAG_BYTE);
+        }
+
+        /**
+         * New tasks persist an explicit policy, including {@code false}. Legacy
+         * blueprint tasks predate that field and were always transactional, so
+         * only those absent-field saves retain the old enabled policy.
+         */
+        static boolean loadedRecordHistory(CompoundTag tag, BuilderTransaction.Type type) {
+            return readHistoryPolicyKnown(tag) ? readRecordHistory(tag)
+                    : type == BuilderTransaction.Type.BLUEPRINT;
+        }
+
+        static boolean loadedHistoryPolicyKnown(CompoundTag tag, BuilderTransaction.Type type) {
+            return readHistoryPolicyKnown(tag) || type == BuilderTransaction.Type.BLUEPRINT;
+        }
+
+        public boolean resolveRecordHistory(boolean currentScepterSetting) {
+            return resolveRecordHistory(historyPolicyKnown, recordHistory, currentScepterSetting);
+        }
+
+        static boolean resolveRecordHistory(boolean policyKnown, boolean stored,
+                                            boolean currentScepterSetting) {
+            return policyKnown ? stored : currentScepterSetting;
+        }
+
+        static int readCompleted(CompoundTag tag) {
+            return tag.contains("Completed", Tag.TAG_INT) ? Math.max(0, tag.getInt("Completed")) : 0;
+        }
+
+        static int readTotal(CompoundTag tag, int missingCount) {
+            return tag.contains("Total", Tag.TAG_INT)
+                    ? Math.max(0, tag.getInt("Total")) : Math.max(0, missingCount);
+        }
+
+        private static int saturatedAdd(int left, int right) {
+            return (int) Math.min(Integer.MAX_VALUE, (long) Math.max(0, left) + Math.max(0, right));
         }
     }
 }

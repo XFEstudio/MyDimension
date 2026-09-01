@@ -5,7 +5,6 @@ import com.xfestudio.mydimension.builder.BuilderRuntime;
 import com.xfestudio.mydimension.builder.PendingBuildData;
 import com.xfestudio.mydimension.builder.RealmwrightData;
 import com.xfestudio.mydimension.builder.anchor.TemporaryAnchorChunkLeases;
-import com.xfestudio.mydimension.builder.history.BuilderHistoryData;
 import com.xfestudio.mydimension.builder.history.BuilderTransaction;
 import com.xfestudio.mydimension.config.BuilderConfig;
 import com.xfestudio.mydimension.registry.ModItems;
@@ -56,7 +55,8 @@ public final class BlueprintTaskManager {
                 .anyMatch(entry -> entry.blockEntityTag() != null);
         manager.active.put(player.getUUID(), new ActiveTask(pending.transactionId(),
                 pending.scepterId(), pending.dimension(), values, new ArrayList<>(), 0,
-                requiresFullDataPermission));
+                requiresFullDataPermission, pending.recordHistory(), pending.completed(), pending.total(),
+                pending.soundPlayed()));
         PendingBuildData.get(player.getServer()).remove(player.getUUID());
     }
 
@@ -86,7 +86,8 @@ public final class BlueprintTaskManager {
             BlueprintPlacementPlan plan = accepted.plan();
             task = new ActiveTask(UUID.randomUUID(), accepted.scepterId(), accepted.dimension(),
                     plan.blocks(), new ArrayList<>(), 0,
-                    plan.blueprint().saveMode() == BlueprintSaveMode.FULL);
+                    plan.blueprint().saveMode() == BlueprintSaveMode.FULL, accepted.recordHistory(),
+                    0, plan.blocks().size(), false);
             active.put(player.getUUID(), task);
         }
         if (!task.scepterId.equals(RealmwrightData.id(scepter))
@@ -104,7 +105,8 @@ public final class BlueprintTaskManager {
         if (task.cursor < maximumEnd
                 && allTargetChunksLoaded(player.serverLevel(), task.blocks, task.cursor, maximumEnd)) {
             BuilderOperationManager.BlueprintBatchResult result = BuilderOperationManager.executeBlueprintBatch(
-                    player, scepter, task.blocks.subList(task.cursor, maximumEnd), task.transactionId);
+                    player, scepter, task.blocks.subList(task.cursor, maximumEnd), task.transactionId,
+                    task.recordHistory);
             if (!acceptBatch(player, task, result)) return;
             task.cursor = maximumEnd;
         }
@@ -118,7 +120,8 @@ public final class BlueprintTaskManager {
 
             try (TemporaryAnchorChunkLeases.Lease ignored = acquisition.lease()) {
                 BuilderOperationManager.BlueprintBatchResult result = BuilderOperationManager.executeBlueprintBatch(
-                        player, scepter, task.blocks.subList(task.cursor, end), task.transactionId);
+                        player, scepter, task.blocks.subList(task.cursor, end), task.transactionId,
+                        task.recordHistory);
                 if (!acceptBatch(player, task, result)) return;
                 task.cursor = end;
             }
@@ -164,13 +167,21 @@ public final class BlueprintTaskManager {
             active.remove(player.getUUID());
             return false;
         }
+        if (!task.soundPlayed && result.sound() != null) {
+            BuilderOperationManager.playOperationSound(player, result.sound());
+            task.soundPlayed = true;
+        }
+        task.completed = accumulatedCompleted(task.completed, result.changed());
         task.missing.addAll(result.missing());
         return true;
     }
 
     private void finish(ServerPlayer player, ActiveTask task) {
-        BuilderHistoryData.get(server).refreshAppliedAfter(player.getUUID(), task.scepterId,
-                task.transactionId, player.serverLevel());
+        if (task.recordHistory) {
+            com.xfestudio.mydimension.builder.history.BuilderHistoryData.get(server)
+                    .refreshAppliedAfter(player.getUUID(), task.scepterId,
+                            task.transactionId, player.serverLevel());
+        }
         if (task.missing.isEmpty()) {
             active.remove(player.getUUID());
             player.displayClientMessage(Component.translatable("message.mydimension.builder.blueprint_complete",
@@ -180,8 +191,12 @@ public final class BlueprintTaskManager {
             PendingBuildData.Task existing = pending.get(player.getUUID());
             if (existing != null && !existing.transactionId().equals(task.transactionId)) return;
             active.remove(player.getUUID());
+            int completed = task.completed;
+            int total = task.persistedTotal > 0 ? task.persistedTotal
+                    : saturatedCount(completed, task.missing.size());
             pending.put(player.getUUID(), new PendingBuildData.Task(task.scepterId,
                     task.transactionId, task.dimension, BuilderTransaction.Type.BLUEPRINT,
+                    task.recordHistory, true, task.soundPlayed, completed, total,
                     task.missing, System.currentTimeMillis()));
             player.displayClientMessage(Component.translatable("message.mydimension.builder.blueprint_waiting",
                     task.missing.size()), true);
@@ -198,7 +213,7 @@ public final class BlueprintTaskManager {
     public Status status(ServerPlayer player) {
         ActiveTask task = active.get(player.getUUID());
         if (task == null) return new Status(null, 0, 0, 0);
-        return new Status(task.transactionId, task.cursor, task.blocks.size(), task.missing.size());
+        return new Status(task.transactionId, task.completed, task.persistedTotal, task.missing.size());
     }
 
     public void pausePlayer(ServerPlayer player) {
@@ -215,9 +230,21 @@ public final class BlueprintTaskManager {
             remaining.add(new PendingBuildData.Entry(block.worldPos(), block.state(), block.blockEntityTag()));
         }
         active.remove(player.getUUID());
+        int completed = task.completed;
+        int total = task.persistedTotal > 0 ? task.persistedTotal
+                : saturatedCount(completed, remaining.size());
         pending.put(player.getUUID(), new PendingBuildData.Task(task.scepterId,
-                task.transactionId, task.dimension, BuilderTransaction.Type.BLUEPRINT, remaining,
-                System.currentTimeMillis()));
+                task.transactionId, task.dimension, BuilderTransaction.Type.BLUEPRINT,
+                task.recordHistory, true,
+                task.soundPlayed, completed, total, remaining, System.currentTimeMillis()));
+    }
+
+    static int accumulatedCompleted(int completed, int changed) {
+        return saturatedCount(completed, changed);
+    }
+
+    private static int saturatedCount(int left, int right) {
+        return (int) Math.min(Integer.MAX_VALUE, (long) Math.max(0, left) + Math.max(0, right));
     }
 
     private static boolean mayUseFullData(ServerPlayer player) {
@@ -248,12 +275,17 @@ public final class BlueprintTaskManager {
         private final List<BlueprintPlacementPlan.PlannedBlock> blocks;
         private final List<PendingBuildData.Entry> missing;
         private final boolean requiresFullDataPermission;
+        private final boolean recordHistory;
+        private final int persistedTotal;
         private int cursor;
+        private int completed;
+        private boolean soundPlayed;
 
         private ActiveTask(UUID transactionId, UUID scepterId, ResourceKey<Level> dimension,
                            List<BlueprintPlacementPlan.PlannedBlock> blocks,
                            List<PendingBuildData.Entry> missing, int cursor,
-                           boolean requiresFullDataPermission) {
+                           boolean requiresFullDataPermission, boolean recordHistory, int persistedCompleted,
+                           int persistedTotal, boolean soundPlayed) {
             this.transactionId = transactionId;
             this.scepterId = scepterId;
             this.dimension = dimension;
@@ -261,6 +293,10 @@ public final class BlueprintTaskManager {
             this.missing = missing;
             this.cursor = cursor;
             this.requiresFullDataPermission = requiresFullDataPermission;
+            this.recordHistory = recordHistory;
+            this.completed = Math.max(0, persistedCompleted);
+            this.persistedTotal = Math.max(this.completed, persistedTotal);
+            this.soundPlayed = soundPlayed;
         }
     }
 }

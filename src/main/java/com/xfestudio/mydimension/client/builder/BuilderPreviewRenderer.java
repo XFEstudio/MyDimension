@@ -86,17 +86,30 @@ public final class BuilderPreviewRenderer {
         if (snapshot == null && candidate == null
                 && BuilderAnchorPreviewTracker.positions(minecraft.level).isEmpty()) return;
 
-        if (snapshot != null) SECTION_CACHE.advance(snapshot, CELLS_PREPARED_PER_FRAME);
+        SECTION_CACHE.advance(snapshot, CELLS_PREPARED_PER_FRAME);
         Vec3 camera = event.getCamera().getPosition();
         int previewDistance = previewDistance(minecraft);
         double previewDistanceSqr = (double) previewDistance * previewDistance;
-        List<BuilderPreviewSectionMeshCache.SectionMesh> visibleSections = snapshot == null
-                ? List.of()
-                : SECTION_CACHE.visibleSections(event.getFrustum(), camera, previewDistanceSqr);
+        long uploadDeadline = System.nanoTime() + SECTION_UPLOAD_BUDGET_NANOS;
+        int stagedUploads = SECTION_CACHE.preparePending(minecraft, camera,
+                (double) FULL_MODEL_DISTANCE * FULL_MODEL_DISTANCE,
+                SECTION_UPLOADS_PER_FRAME, uploadDeadline);
+        BuilderPreviewState.Snapshot renderedSnapshot = SECTION_CACHE.renderSnapshot(snapshot);
+        List<BuilderPreviewSectionMeshCache.SectionMesh> visibleSections = renderedSnapshot == null
+                ? List.of() : SECTION_CACHE.visibleSections(
+                        event.getFrustum(), camera, previewDistanceSqr);
         SECTION_CACHE.prepareVisibleSections(minecraft, visibleSections, camera,
-                (double) FULL_MODEL_DISTANCE * FULL_MODEL_DISTANCE, SECTION_UPLOADS_PER_FRAME,
-                System.nanoTime() + SECTION_UPLOAD_BUDGET_NANOS);
+                (double) FULL_MODEL_DISTANCE * FULL_MODEL_DISTANCE,
+                Math.max(0, SECTION_UPLOADS_PER_FRAME - stagedUploads), uploadDeadline);
         BuilderPreviewState.Focus focus = BuilderPreviewState.get().focus();
+        if (focus != null && focus.kind() != BuilderPreviewState.FocusKind.CANDIDATE
+                && !SECTION_CACHE.represents(snapshot)) {
+            // The hit-test indexes already point at the newest immutable state, whereas section
+            // VBOs deliberately keep rendering the previous complete generation during upload.
+            // Do not draw a thick outline for an object that is not visible in that generation.
+            BuilderPreviewState.get().clearHover();
+            focus = null;
+        }
         BuilderPreviewState.MissingGroup focusedMissingGroup = focus != null
                 && focus.kind() == BuilderPreviewState.FocusKind.MISSING
                 ? focus.missingGroup() : null;
@@ -130,9 +143,9 @@ public final class BuilderPreviewRenderer {
                     section -> section.outlineBuffer() == null
                             ? List.of() : List.of(section.outlineBuffer()), false, 1.0F);
 
-            renderDynamicOutlines(minecraft, poseStack, snapshot, candidate,
+            renderDynamicOutlines(minecraft, poseStack, renderedSnapshot, candidate,
                     camera, previewDistanceSqr, BuilderPreviewRenderTypes.outlineXray(), 0.16F);
-            renderDynamicOutlines(minecraft, poseStack, snapshot, candidate,
+            renderDynamicOutlines(minecraft, poseStack, renderedSnapshot, candidate,
                     camera, previewDistanceSqr, BuilderPreviewRenderTypes.outline(), 1.0F);
             FOCUSED_OUTLINE_CACHE.draw(poseStack, event.getProjectionMatrix(),
                     BuilderPreviewRenderTypes.outlineXray(), 0.16F);
@@ -222,7 +235,7 @@ public final class BuilderPreviewRenderer {
             }
         }
 
-        AABB blueprintBounds = BuilderPreviewState.get().blueprintBounds();
+        AABB blueprintBounds = blueprintBounds(snapshot);
         if (blueprintBounds != null && withinDistance(blueprintBounds, camera, maximumDistanceSqr)) {
             BuilderPreviewGeometry.emitBox(pose, quads, blueprintBounds.inflate(0.004D),
                     BuilderPreviewState.Kind.BLUEPRINT, NORMAL_OUTLINE_WIDTH,
@@ -256,6 +269,26 @@ public final class BuilderPreviewRenderer {
         double y = Mth.clamp(point.y, bounds.minY, bounds.maxY) - point.y;
         double z = Mth.clamp(point.z, bounds.minZ, bounds.maxZ) - point.z;
         return x * x + y * y + z * z <= maximumDistanceSqr;
+    }
+
+    @Nullable
+    private static AABB blueprintBounds(@Nullable BuilderPreviewState.Snapshot snapshot) {
+        if (snapshot == null || !snapshot.blueprintPreview() || snapshot.cells().isEmpty()) return null;
+        int minX = Integer.MAX_VALUE;
+        int minY = Integer.MAX_VALUE;
+        int minZ = Integer.MAX_VALUE;
+        int maxX = Integer.MIN_VALUE;
+        int maxY = Integer.MIN_VALUE;
+        int maxZ = Integer.MIN_VALUE;
+        for (BuilderPreviewState.Cell cell : snapshot.cells()) {
+            minX = Math.min(minX, cell.pos().getX());
+            minY = Math.min(minY, cell.pos().getY());
+            minZ = Math.min(minZ, cell.pos().getZ());
+            maxX = Math.max(maxX, cell.pos().getX());
+            maxY = Math.max(maxY, cell.pos().getY());
+            maxZ = Math.max(maxZ, cell.pos().getZ());
+        }
+        return new AABB(minX, minY, minZ, maxX + 1.0D, maxY + 1.0D, maxZ + 1.0D);
     }
 
     private static int previewDistance(Minecraft minecraft) {

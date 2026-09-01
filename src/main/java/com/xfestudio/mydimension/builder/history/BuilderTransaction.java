@@ -106,6 +106,15 @@ public final class BuilderTransaction {
                 offhandBefore, offhandAfter, State.CONFLICTED, 0L);
     }
 
+    /** True only while the live world still equals the transaction's recorded applied image. */
+    public boolean matchesAppliedAfter(ServerLevel level) {
+        if (state != State.APPLIED || !dimension.equals(level.dimension())) return false;
+        for (WorldDelta delta : worldDeltas) {
+            if (!delta.matchesAfter(level)) return false;
+        }
+        return true;
+    }
+
     /** Re-snapshots only the applied side, retaining the original before-images and material ledger. */
     public BuilderTransaction refreshAppliedAfter(ServerLevel level) {
         List<WorldDelta> refreshed = new ArrayList<>(worldDeltas.size());

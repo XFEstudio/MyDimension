@@ -187,6 +187,7 @@ public final class BlueprintServerService {
             return;
         }
         UUID scepterId = RealmwrightData.id(scepter);
+        boolean recordHistory = RealmwrightData.recordsHistory(scepter);
         ResourceKey<Level> dimension = player.level().dimension();
         if (hasWorkConflict(player)) {
             sendResult(player, requestId, false, null,
@@ -226,7 +227,7 @@ public final class BlueprintServerService {
             sendResult(player, requestId, false, null, "Blueprint placement queue is full");
             return;
         }
-        queue.add(new QueuedPlacement(plan, dimension, scepterId));
+        queue.add(new QueuedPlacement(plan, dimension, scepterId, recordHistory));
         sendResult(player, requestId, true, cacheToken, "Blueprint queued");
     }
 
@@ -299,7 +300,8 @@ public final class BlueprintServerService {
         PendingBuildData.get(server).put(player.getUUID(), new PendingBuildData.Task(queued.scepterId(),
                 UUID.randomUUID(), queued.dimension(),
                 com.xfestudio.mydimension.builder.history.BuilderTransaction.Type.BLUEPRINT,
-                remaining, System.currentTimeMillis()));
+                queued.recordHistory(), true, false, 0, remaining.size(), remaining,
+                System.currentTimeMillis()));
     }
 
     public void clear() {
@@ -456,6 +458,7 @@ public final class BlueprintServerService {
     }
 
     /** Immutable binding captured when the server accepts a placement request. */
-    public record QueuedPlacement(BlueprintPlacementPlan plan, ResourceKey<Level> dimension, UUID scepterId) {
+    public record QueuedPlacement(BlueprintPlacementPlan plan, ResourceKey<Level> dimension, UUID scepterId,
+                                  boolean recordHistory) {
     }
 }

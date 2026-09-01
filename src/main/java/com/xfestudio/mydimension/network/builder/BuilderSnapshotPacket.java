@@ -56,11 +56,18 @@ public record BuilderSnapshotPacket(boolean enabled, BuilderMode mode, SurfaceMa
                         Math.min(MAX_HISTORY, settings.undoDepth()))
                 .stream().map(History::from).toList();
 
+        int historyCompleted = pending != null && undo != null && undo.id().equals(pending.transactionId())
+                ? undo.worldDeltas().size() : 0;
+        PendingBuildData.Progress pendingProgress = pending == null
+                ? new PendingBuildData.Progress(0, 0)
+                : PendingBuildData.progress(pending.completed(), pending.total(),
+                pending.missing().size(), historyCompleted);
         int completed = running.transactionId() != null ? running.completed()
-                : pending == null ? 0 : completedFor(pending, undo);
+                : pendingProgress.completed();
         int missing = running.transactionId() != null ? running.missing()
                 : pending == null ? 0 : pending.missing().size();
-        int total = running.transactionId() != null ? running.total() : completed + missing;
+        int total = running.transactionId() != null ? running.total()
+                : pendingProgress.total();
         String status = running.transactionId() != null ? "Building blueprint"
                 : pending == null ? "" : "Waiting for " + missing + " block(s)";
         return new BuilderSnapshotPacket(
@@ -83,10 +90,6 @@ public record BuilderSnapshotPacket(boolean enabled, BuilderMode mode, SurfaceMa
                 anchors(player, scepter),
                 history
         );
-    }
-
-    private static int completedFor(PendingBuildData.Task pending, @Nullable BuilderTransaction undo) {
-        return undo != null && undo.id().equals(pending.transactionId()) ? undo.worldDeltas().size() : 0;
     }
 
     private static List<Anchor> anchors(ServerPlayer player, ItemStack scepter) {

@@ -25,11 +25,14 @@ import net.minecraftforge.registries.ForgeRegistries;
 
 import javax.annotation.Nullable;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -54,15 +57,24 @@ final class BuilderPreviewSectionMeshCache {
     @Nullable
     private BuilderPreviewState.Snapshot source;
     private Map<SectionKey, SectionMesh> sections = new LinkedHashMap<>();
+    @Nullable
+    private PendingGeneration pending;
+    /**
+     * Only the newest desired snapshot is retained while a generation is uploading. Replacing an
+     * in-flight generation for every server tick would continuously throw away its partial VBOs;
+     * a shrinking blueprint could then remain frozen forever without publishing even one section.
+     */
+    private final LatestWinsQueue<BuilderPreviewState.Snapshot> queued = new LatestWinsQueue<>();
 
-    /** Synchronizes lightweight cell groups; expensive geometry stays render-budgeted. */
-    void advance(@Nullable BuilderPreviewState.Snapshot snapshot, int ignoredCellBudget) {
+    /** Stages lightweight cell groups; the currently rendered generation remains untouched. */
+    synchronized void advance(@Nullable BuilderPreviewState.Snapshot snapshot, int ignoredCellBudget) {
         synchronize(snapshot);
     }
 
     /** Returns in-range, frustum-visible sections nearest-first. */
-    List<SectionMesh> visibleSections(net.minecraft.client.renderer.culling.Frustum frustum,
-                                      Vec3 camera, double maximumDistanceSqr) {
+    synchronized List<SectionMesh> visibleSections(
+            net.minecraft.client.renderer.culling.Frustum frustum,
+            Vec3 camera, double maximumDistanceSqr) {
         List<SectionMesh> visible = new ArrayList<>();
         for (SectionMesh section : sections.values()) {
             if (section.closestDistanceToSqr(camera) > maximumDistanceSqr) continue;
@@ -72,9 +84,65 @@ final class BuilderPreviewSectionMeshCache {
         return visible;
     }
 
+    /**
+     * Builds section back buffers without exposing partial VBOs. Each complete section atomically
+     * replaces the section at the same key, while removed/old-only keys remain as fallback until
+     * the target generation is complete. This bounds visible latency for a large blueprint by the
+     * nearest section rather than requiring all 65k projected models to finish first.
+     *
+     * @return the number of upload-budget slots consumed
+     */
+    synchronized int preparePending(Minecraft minecraft, Vec3 camera, double modelDistanceSqr,
+                                    int uploadBudget, long deadlineNanos) {
+        PendingGeneration generation = pending;
+        if (generation == null) return 0;
+
+        promoteReadySections(generation, camera, modelDistanceSqr);
+        if (generation.promoted().size() == generation.sections().size()) {
+            finishGeneration(generation);
+            return 0;
+        }
+        if (uploadBudget <= 0) return 0;
+
+        List<Map.Entry<SectionKey, SectionMesh>> ordered =
+                new ArrayList<>(generation.sections().entrySet());
+        ordered.sort(Comparator.comparingDouble(
+                entry -> entry.getValue().closestDistanceToSqr(camera)));
+        int uploaded = 0;
+        while (uploaded < uploadBudget && System.nanoTime() < deadlineNanos) {
+            boolean progressed = false;
+            for (Map.Entry<SectionKey, SectionMesh> entry : ordered) {
+                if (generation.promoted().contains(entry.getKey())) continue;
+                SectionMesh section = entry.getValue();
+                boolean requireModels = requireGhostCompletion(
+                        section.closestDistanceToSqr(camera) <= modelDistanceSqr,
+                        section.ghostUploadStarted());
+                if (section.ready(requireModels)) continue;
+                if (section.uploadNext(minecraft, requireModels)) {
+                    uploaded++;
+                    progressed = true;
+                    // Spend the next slot on this same nearest section. It can therefore publish
+                    // in ceil(sectionUploads / frameBudget) frames instead of waiting behind every
+                    // section in a 65k-cell blueprint.
+                    break;
+                }
+            }
+            if (!progressed) break;
+        }
+
+        if (pending == generation) {
+            promoteReadySections(generation, camera, modelDistanceSqr);
+            if (generation.promoted().size() == generation.sections().size()) {
+                finishGeneration(generation);
+            }
+        }
+        return uploaded;
+    }
+
     /** Uploads one dirty section, then continues only while both budgets allow. */
-    void prepareVisibleSections(Minecraft minecraft, List<SectionMesh> visible, Vec3 camera,
-                                double modelDistanceSqr, int uploadBudget, long deadlineNanos) {
+    synchronized void prepareVisibleSections(Minecraft minecraft, List<SectionMesh> visible,
+                                             Vec3 camera, double modelDistanceSqr,
+                                             int uploadBudget, long deadlineNanos) {
         if (uploadBudget <= 0) return;
         int uploaded = 0;
         for (SectionMesh section : visible) {
@@ -85,27 +153,99 @@ final class BuilderPreviewSectionMeshCache {
         }
     }
 
-    void clear() {
+    /** Snapshot whose VBO generation is currently safe to draw. */
+    @Nullable
+    synchronized BuilderPreviewState.Snapshot renderSnapshot(
+            @Nullable BuilderPreviewState.Snapshot requested) {
+        return source == null ? requested : source;
+    }
+
+    synchronized boolean represents(@Nullable BuilderPreviewState.Snapshot snapshot) {
+        return snapshot == null
+                ? source == null && pending == null && queued.isEmpty()
+                : source != null && sameGeometry(source, snapshot)
+                && pending == null && queued.isEmpty();
+    }
+
+    synchronized void clear() {
+        Set<SectionMesh> closed = identitySet();
+        sections.values().forEach(mesh -> closeOnce(mesh, closed));
+        if (pending != null) {
+            pending.sections().values().forEach(mesh -> closeOnce(mesh, closed));
+        }
         source = null;
-        sections.values().forEach(SectionMesh::close);
         sections.clear();
+        pending = null;
+        queued.clear();
     }
 
     private void synchronize(@Nullable BuilderPreviewState.Snapshot snapshot) {
-        if (source == snapshot) return;
         if (snapshot == null) {
             clear();
             return;
         }
-        if (source != null
-                && source.dimension().equals(snapshot.dimension())
-                && source.cells().equals(snapshot.cells())
-                && source.blueprintPreview() == snapshot.blueprintPreview()) {
+        if (source == snapshot && pending == null && queued.isEmpty()
+                || pending != null && pending.source() == snapshot && queued.isEmpty()) return;
+
+        // Old-world geometry must never survive a dimension handoff. This is the only update
+        // that intentionally bypasses the back-buffer transition.
+        if (source != null && !Objects.equals(source.dimension(), snapshot.dimension())
+                || pending != null && !Objects.equals(
+                pending.source().dimension(), snapshot.dimension())) {
+            clear();
+        }
+
+        // Explicit completion/cancellation is already a fully prepared result. It must not wait
+        // behind an in-flight upload, and it is also the lifecycle escape hatch used when the
+        // player puts the scepter away or leaves the world.
+        if (snapshot.cells().isEmpty()) {
+            discardPending();
+            queued.clear();
+            sections.values().forEach(SectionMesh::close);
+            sections = new LinkedHashMap<>();
             source = snapshot;
             return;
         }
 
-        boolean includeBuildGhosts = snapshot.blueprintPreview();
+        if (pending != null) {
+            if (sameGeometry(pending.source(), snapshot)) {
+                // The newest packet returned to the in-flight target. Keep its current VBO work
+                // and discard a now-stale deferred target.
+                pending.source = snapshot;
+                queued.clear();
+                return;
+            }
+            if (source != null && sameGeometry(source, snapshot) && !pending.mutatedActive) {
+                // No staged section has been published yet, so returning to the committed frame
+                // can safely cancel the transition without generating anything else.
+                discardPending();
+                pending = null;
+                queued.clear();
+                source = snapshot;
+                return;
+            }
+
+            // Coalesce high-frequency progress snapshots. In particular, do not regroup 65k
+            // cells or regenerate wave adjacency every tick while the current target is still
+            // uploading. Once it completes, finishGeneration starts exactly this latest target.
+            queued.offer(snapshot);
+            return;
+        }
+
+        if (source != null && sameGeometry(source, snapshot)) {
+            source = snapshot;
+            return;
+        }
+
+        stageSnapshot(snapshot);
+    }
+
+    /** Creates one immutable target generation. Called only when no other target is in flight. */
+    private void stageSnapshot(BuilderPreviewState.Snapshot snapshot) {
+
+        // Surface builds and blueprint deployments both show the concrete material preview.
+        // The rift-wave overlay remains restricted to missing-material cells by isWaveCell().
+        boolean includeBuildGhosts = true;
 
         Map<SectionKey, List<BuilderPreviewState.Cell>> grouped = new LinkedHashMap<>();
         LongSet missingGhostPositions = new LongOpenHashSet();
@@ -114,24 +254,182 @@ final class BuilderPreviewSectionMeshCache {
             if (isWaveCell(cell)) missingGhostPositions.add(cell.pos().asLong());
         }
 
-        Map<SectionKey, SectionMesh> previous = sections;
         Map<SectionKey, SectionMesh> replacement = new LinkedHashMap<>(grouped.size());
+        Set<SectionMesh> retained = identitySet();
+        Set<SectionKey> promoted = new HashSet<>();
         for (Map.Entry<SectionKey, List<BuilderPreviewState.Cell>> entry : grouped.entrySet()) {
-            SectionMesh existing = previous.remove(entry.getKey());
+            SectionKey key = entry.getKey();
+            List<WaveCell> waveCells = createWaveCells(entry.getValue(), missingGhostPositions,
+                    key.x() * SECTION_SIZE, key.y() * SECTION_SIZE, key.z() * SECTION_SIZE);
+            SectionMesh existing = sections.get(entry.getKey());
             if (existing != null && existing.matches(
-                    entry.getValue(), missingGhostPositions, includeBuildGhosts)) {
+                    entry.getValue(), waveCells, includeBuildGhosts)) {
                 replacement.put(entry.getKey(), existing);
+                retained.add(existing);
+                promoted.add(entry.getKey());
             } else {
-                if (existing != null) existing.close();
-                replacement.put(entry.getKey(), new SectionMesh(
-                        entry.getKey(), entry.getValue(), missingGhostPositions,
-                        includeBuildGhosts));
+                SectionMesh staged = pending == null ? null
+                        : pending.sections().get(entry.getKey());
+                if (staged != null && staged.matches(
+                        entry.getValue(), waveCells, includeBuildGhosts)) {
+                    replacement.put(entry.getKey(), staged);
+                    retained.add(staged);
+                } else {
+                    SectionMesh created = new SectionMesh(entry.getKey(), entry.getValue(),
+                            waveCells, includeBuildGhosts);
+                    replacement.put(entry.getKey(), created);
+                    retained.add(created);
+                }
             }
         }
-        previous.values().forEach(SectionMesh::close);
-        previous.clear();
-        sections = replacement;
-        source = snapshot;
+        pending = new PendingGeneration(snapshot, replacement, promoted);
+    }
+
+    private void promoteReadySections(PendingGeneration generation, Vec3 camera,
+                                      double modelDistanceSqr) {
+        if (pending != generation) return;
+        for (Map.Entry<SectionKey, SectionMesh> entry : generation.sections().entrySet()) {
+            if (generation.promoted().contains(entry.getKey())) continue;
+            SectionMesh section = entry.getValue();
+            boolean requireModels = requireGhostCompletion(
+                    section.closestDistanceToSqr(camera) <= modelDistanceSqr,
+                    section.ghostUploadStarted());
+            if (!section.ready(requireModels)) continue;
+
+            // The replacement section is already complete when published. The old section at the
+            // same key remains drawable up to this exact map mutation, so there is never a blank
+            // frame even when a 65k blueprint takes many frames to refresh.
+            SectionMesh old = sections.put(entry.getKey(), section);
+            generation.promoted().add(entry.getKey());
+            if (old != null && old != section) {
+                generation.mutatedActive = true;
+                old.close();
+            }
+        }
+    }
+
+    private void finishGeneration(PendingGeneration generation) {
+        if (pending != generation) return;
+        // Keys removed by the new snapshot deliberately remain as fallback geometry until every
+        // replacement key is complete. Removing them here makes the final generation transition
+        // deterministic without delaying already-ready sections.
+        Set<SectionKey> targetKeys = generation.sections().keySet();
+        java.util.Iterator<Map.Entry<SectionKey, SectionMesh>> iterator =
+                sections.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<SectionKey, SectionMesh> entry = iterator.next();
+            if (targetKeys.contains(entry.getKey())) continue;
+            entry.getValue().close();
+            iterator.remove();
+        }
+        source = generation.source();
+        pending = null;
+
+        BuilderPreviewState.Snapshot latest = queued.take();
+        if (latest == null) return;
+        if (!Objects.equals(source.dimension(), latest.dimension())) {
+            // This is defensive: synchronize normally hard-clears a dimension change before it
+            // can enter the queue.
+            clear();
+            if (!latest.cells().isEmpty()) stageSnapshot(latest);
+            else source = latest;
+        } else if (sameGeometry(source, latest)) {
+            source = latest;
+        } else if (latest.cells().isEmpty()) {
+            sections.values().forEach(SectionMesh::close);
+            sections = new LinkedHashMap<>();
+            source = latest;
+        } else {
+            stageSnapshot(latest);
+        }
+    }
+
+    private void discardPending() {
+        discardPendingExcept(identitySet());
+        pending = null;
+    }
+
+    private void discardPendingExcept(Set<SectionMesh> retained) {
+        if (pending == null) return;
+        Set<SectionMesh> active = identitySet();
+        active.addAll(sections.values());
+        Set<SectionMesh> closed = identitySet();
+        for (SectionMesh mesh : pending.sections().values()) {
+            if (!active.contains(mesh) && !retained.contains(mesh)) closeOnce(mesh, closed);
+        }
+    }
+
+    private static boolean sameGeometry(BuilderPreviewState.Snapshot first,
+                                        BuilderPreviewState.Snapshot second) {
+        return Objects.equals(first.dimension(), second.dimension())
+                && first.cells().equals(second.cells());
+    }
+
+    private static Set<SectionMesh> identitySet() {
+        return Collections.newSetFromMap(new IdentityHashMap<>());
+    }
+
+    private static void closeOnce(SectionMesh mesh, Set<SectionMesh> closed) {
+        if (closed.add(mesh)) mesh.close();
+    }
+
+    private static final class PendingGeneration {
+        private BuilderPreviewState.Snapshot source;
+        private final Map<SectionKey, SectionMesh> sections;
+        private final Set<SectionKey> promoted;
+        private boolean mutatedActive;
+
+        private PendingGeneration(BuilderPreviewState.Snapshot source,
+                                  Map<SectionKey, SectionMesh> sections,
+                                  Set<SectionKey> promoted) {
+            this.source = source;
+            this.sections = new LinkedHashMap<>(sections);
+            this.promoted = new HashSet<>(promoted);
+        }
+
+        private BuilderPreviewState.Snapshot source() { return source; }
+        private Map<SectionKey, SectionMesh> sections() { return sections; }
+        private Set<SectionKey> promoted() { return promoted; }
+    }
+
+    /** Single-slot latest-wins handoff used to coalesce immutable preview snapshots. */
+    static final class LatestWinsQueue<T> {
+        @Nullable
+        private T latest;
+
+        void offer(T value) {
+            latest = value;
+        }
+
+        @Nullable
+        T take() {
+            T value = latest;
+            latest = null;
+            return value;
+        }
+
+        void clear() {
+            latest = null;
+        }
+
+        boolean isEmpty() {
+            return latest == null;
+        }
+
+        @Nullable
+        T peek() {
+            return latest;
+        }
+    }
+
+    @Nullable
+    synchronized BuilderPreviewState.Snapshot inFlightSnapshotForTesting() {
+        return pending == null ? null : pending.source();
+    }
+
+    @Nullable
+    synchronized BuilderPreviewState.Snapshot queuedSnapshotForTesting() {
+        return queued.peek();
     }
 
     static final class SectionMesh {
@@ -151,7 +449,7 @@ final class BuilderPreviewSectionMeshCache {
         private int waveCursor;
 
         private SectionMesh(SectionKey key, List<BuilderPreviewState.Cell> cells,
-                            LongSet missingGhostPositions, boolean includeBuildGhosts) {
+                            List<WaveCell> waveCells, boolean includeBuildGhosts) {
             originX = key.x() * SECTION_SIZE;
             originY = key.y() * SECTION_SIZE;
             originZ = key.z() * SECTION_SIZE;
@@ -160,19 +458,16 @@ final class BuilderPreviewSectionMeshCache {
                     .inflate(0.02D);
             this.cells = List.copyOf(cells);
             this.includeBuildGhosts = includeBuildGhosts;
-            waveCells = createWaveCells(cells, missingGhostPositions, originX, originY, originZ);
-            // A manual surface BUILD is deliberately only a green wireframe. Blueprint placement
-            // uses the same BUILD kind, but must retain the concrete block projection so the player
-            // can inspect the copied palette before committing it.
+            this.waveCells = List.copyOf(waveCells);
             hasGhosts = cells.stream().anyMatch(cell -> isGhostCell(cell, includeBuildGhosts));
         }
 
         private boolean matches(List<BuilderPreviewState.Cell> replacement,
-                                LongSet missingGhostPositions, boolean replacementBuildGhosts) {
+                                List<WaveCell> replacementWaves,
+                                boolean replacementBuildGhosts) {
             return includeBuildGhosts == replacementBuildGhosts
                     && cells.equals(replacement)
-                    && waveCells.equals(createWaveCells(
-                    replacement, missingGhostPositions, originX, originY, originZ));
+                    && waveCells.equals(replacementWaves);
         }
 
         private boolean uploadNext(Minecraft minecraft, boolean buildModels) {
@@ -196,6 +491,16 @@ final class BuilderPreviewSectionMeshCache {
                 return true;
             }
             return false;
+        }
+
+        private boolean ready(boolean requireModels) {
+            return outlineBuffer != null
+                    && waveCursor >= waveCells.size()
+                    && (!requireModels || !hasGhosts || ghostCursor >= cells.size());
+        }
+
+        private boolean ghostUploadStarted() {
+            return ghostCursor > 0;
         }
 
         @Nullable
@@ -381,7 +686,7 @@ final class BuilderPreviewSectionMeshCache {
                 && !cell.state().isAir();
     }
 
-    /** BUILD models are concrete only inside blueprint copy/deployment snapshots. */
+    /** Every ghost-enabled preview kind, including ordinary BUILD, may render its block model. */
     static boolean isGhostCell(BuilderPreviewState.Cell cell, boolean blueprintPreview) {
         return cell.ghost()
                 && permitsGhostKind(cell.kind(), blueprintPreview)
@@ -390,7 +695,28 @@ final class BuilderPreviewSectionMeshCache {
     }
 
     static boolean permitsGhostKind(BuilderPreviewState.Kind kind, boolean blueprintPreview) {
-        return kind != BuilderPreviewState.Kind.BUILD || blueprintPreview;
+        return true;
+    }
+
+    /** Conservative promotion latency for one section under the configured upload budget. */
+    static int maximumPromotionFrames(int cellCount, int waveCellCount, boolean hasGhosts,
+                                      boolean requireModels, int uploadsPerFrame) {
+        if (cellCount <= 0 || uploadsPerFrame <= 0) return 0;
+        int uploads = 1 + divideRoundUp(Math.max(0, waveCellCount), WAVE_CELLS_PER_UPLOAD);
+        if (hasGhosts && requireModels) {
+            uploads += divideRoundUp(cellCount, MODEL_CELLS_PER_UPLOAD);
+        }
+        return divideRoundUp(uploads, uploadsPerFrame);
+    }
+
+    /** Once a section starts its ghost back-buffer, moving away may not publish it half-built. */
+    static boolean requireGhostCompletion(boolean withinModelDistance,
+                                          boolean ghostUploadStarted) {
+        return withinModelDistance || ghostUploadStarted;
+    }
+
+    private static int divideRoundUp(int value, int divisor) {
+        return value == 0 ? 0 : 1 + (value - 1) / divisor;
     }
 
     private static List<WaveCell> createWaveCells(List<BuilderPreviewState.Cell> cells,

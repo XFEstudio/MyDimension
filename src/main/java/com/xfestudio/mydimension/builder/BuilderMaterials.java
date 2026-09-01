@@ -18,6 +18,32 @@ public final class BuilderMaterials {
 
         /** Returns the part that could not be stored. */
         ItemStack insert(ServerPlayer player, ItemStack scepter, ItemStack stack);
+
+        /**
+         * Stores a whole operation's output while preserving one remainder per input value.
+         * Implementations backed by remote endpoints should override this so leases and
+         * capabilities are resolved once per operation instead of once per dropped stack.
+         */
+        default List<ItemStack> insertAll(ServerPlayer player, ItemStack scepter,
+                                          List<ItemStack> stacks) {
+            List<ItemStack> remainders = new ArrayList<>(stacks.size());
+            for (ItemStack stack : stacks) {
+                if (stack.isEmpty()) {
+                    remainders.add(ItemStack.EMPTY);
+                    continue;
+                }
+                ItemStack original = stack.copy();
+                try {
+                    remainders.add(BuilderMaterials.normalizeRemoteRemainder(
+                            original, insert(player, scepter, original.copy())));
+                } catch (RuntimeException ignored) {
+                    // Isolate one endpoint failure without forgetting remainders from values that
+                    // were already committed successfully earlier in this operation.
+                    remainders.add(original);
+                }
+            }
+            return List.copyOf(remainders);
+        }
     }
 
     public record Extraction(int count, List<ItemStack> stacks) {
@@ -102,21 +128,71 @@ public final class BuilderMaterials {
 
     private static List<ItemStack> insert(ServerPlayer player, ItemStack scepter, List<ItemStack> values,
                                           boolean allowOffhand) {
-        List<ItemStack> overflow = new ArrayList<>();
-        for (ItemStack value : values) {
-            if (value.isEmpty()) continue;
-            ItemStack remainder;
-            try {
-                remainder = remote.insert(player, scepter, value.copy());
-            } catch (RuntimeException ignored) {
-                remainder = value.copy();
-            }
-            remainder = insertSlotRange(player, remainder, 9, 35, -1);
-            remainder = insertSlotRange(player, remainder, 0, 8, player.getInventory().selected);
-            if (allowOffhand && !remainder.isEmpty()) remainder = insertOffhand(player, remainder, scepter);
+        List<ItemStack> aligned = insertAligned(player, scepter, values, allowOffhand);
+        List<ItemStack> overflow = new ArrayList<>(aligned.size());
+        for (ItemStack remainder : aligned) {
             if (!remainder.isEmpty()) overflow.add(remainder.copy());
         }
         return overflow;
+    }
+
+    /**
+     * Stores all values in one material-access session and returns a remainder at
+     * every corresponding input index.  Keeping the alignment lets demolition
+     * put overflow back at the exact block that produced it without reopening
+     * every remote anchor for every block.
+     */
+    public static List<ItemStack> insertAligned(ServerPlayer player, ItemStack scepter,
+                                                 List<ItemStack> values) {
+        return insertAligned(player, scepter, values, true);
+    }
+
+    /** Aligned batch variant that reserves the offhand for the demolition tool state. */
+    public static List<ItemStack> insertAlignedPreservingOffhand(ServerPlayer player, ItemStack scepter,
+                                                                  List<ItemStack> values) {
+        return insertAligned(player, scepter, values, false);
+    }
+
+    private static List<ItemStack> insertAligned(ServerPlayer player, ItemStack scepter,
+                                                  List<ItemStack> values, boolean allowOffhand) {
+        List<ItemStack> offered = values.stream().map(stack -> stack.isEmpty()
+                ? ItemStack.EMPTY : stack.copy()).toList();
+        List<ItemStack> remoteRemainders;
+        try {
+            List<ItemStack> remoteInput = offered.stream()
+                    .map(stack -> stack.isEmpty() ? ItemStack.EMPTY : stack.copy()).toList();
+            remoteRemainders = remote.insertAll(player, scepter, remoteInput);
+            if (remoteRemainders == null || remoteRemainders.size() != offered.size()) {
+                remoteRemainders = offered;
+            }
+        } catch (RuntimeException ignored) {
+            remoteRemainders = offered;
+        }
+
+        List<ItemStack> remainders = new ArrayList<>(offered.size());
+        for (int index = 0; index < offered.size(); index++) {
+            ItemStack value = offered.get(index);
+            if (value.isEmpty()) {
+                remainders.add(ItemStack.EMPTY);
+                continue;
+            }
+            ItemStack remainder = normalizeRemoteRemainder(value, remoteRemainders.get(index));
+            remainder = insertSlotRange(player, remainder, 9, 35, -1);
+            remainder = insertSlotRange(player, remainder, 0, 8, player.getInventory().selected);
+            if (allowOffhand && !remainder.isEmpty()) remainder = insertOffhand(player, remainder, scepter);
+            remainders.add(remainder.isEmpty() ? ItemStack.EMPTY : remainder.copy());
+        }
+        return List.copyOf(remainders);
+    }
+
+    /** Rejects malformed handler output before it can duplicate, inflate or transform an item. */
+    private static ItemStack normalizeRemoteRemainder(ItemStack offered, ItemStack returned) {
+        if (offered.isEmpty()) return ItemStack.EMPTY;
+        if (returned == null || !returned.isEmpty()
+                && (!matches(returned, offered) || returned.getCount() > offered.getCount())) {
+            return offered.copy();
+        }
+        return returned.isEmpty() ? ItemStack.EMPTY : returned.copy();
     }
 
     /** Conservative exact removal used before undoing demolition. */

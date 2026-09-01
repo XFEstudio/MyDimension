@@ -55,6 +55,7 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
     private BlockPos offset = BlockPos.ZERO;
     @Nullable private BlockPos lastPreviewAnchor;
     private boolean previewDirty;
+    private int blueprintTargetMissTicks;
 
     private BuilderClientNetworkBridge() {
     }
@@ -162,7 +163,9 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
 
     @Override
     public void availability(boolean enabled) {
-        BuilderAvailability.acceptServerValue(enabled);
+        // Every ordinary build result carries the same enabled bit. Rebuilding all creative tabs
+        // for that unchanged bit caused a large client-frame hitch after every click.
+        if (!BuilderAvailability.acceptServerValue(enabled)) return;
         Minecraft minecraft = Minecraft.getInstance();
         if (minecraft.player == null || minecraft.level == null) return;
         boolean operatorTab = minecraft.player.canUseGameMasterBlocks()
@@ -191,8 +194,15 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
                 dimension, packet.first(), packet.second(), current);
         boolean cancelable = BuilderPreviewState.mergeCancelable(packet.cancelable(),
                 packet.blueprintPreview(), selection);
-        BuilderPreviewState.get().accept(new BuilderPreviewState.Snapshot(dimension, cells, selection,
-                packet.activeJobId(), packet.blueprintPreview(), cancelable, packet.revision()));
+        BuilderPreviewState.Snapshot incoming = new BuilderPreviewState.Snapshot(
+                dimension, cells, selection, packet.activeJobId(), packet.blueprintPreview(),
+                cancelable, packet.revision());
+        boolean emptyServerWorkflow = packet.cells().isEmpty() && packet.first() == null
+                && packet.second() == null && packet.activeJobId() == null
+                && !packet.blueprintPreview() && !packet.cancelable();
+        BuilderPreviewState.Snapshot merged = BuilderPreviewState.mergeServerSnapshot(
+                current, incoming, emptyServerWorkflow);
+        if (merged != current) BuilderPreviewState.get().accept(merged);
     }
 
     @Override
@@ -271,6 +281,7 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
         INSTANCE.pendingPlacement = null;
         INSTANCE.lastPreviewAnchor = null;
         INSTANCE.previewDirty = false;
+        INSTANCE.blueprintTargetMissTicks = 0;
         INSTANCE.transform = BlueprintTransform.NONE;
         INSTANCE.offset = BlockPos.ZERO;
         BLUEPRINT_TRANSFERS.clear();
@@ -291,6 +302,7 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
         INSTANCE.pendingPlacement = null;
         INSTANCE.lastPreviewAnchor = null;
         INSTANCE.previewDirty = false;
+        INSTANCE.blueprintTargetMissTicks = 0;
         INSTANCE.transform = BlueprintTransform.NONE;
         INSTANCE.offset = BlockPos.ZERO;
         BuilderPreviewState.get().clearPlacementPreview();
@@ -444,14 +456,22 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
             HitResult picked = minecraft.player.pick(Math.max(1, snapshot().reach()), 1.0F, false);
             if (!(picked instanceof BlockHitResult hit) || picked.getType() != HitResult.Type.BLOCK) {
                 if (lastPreviewAnchor != null) {
-                    lastPreviewAnchor = null;
-                    clearBlueprintCells(minecraft);
+                    if (++blueprintTargetMissTicks >= 2) {
+                        lastPreviewAnchor = null;
+                        blueprintTargetMissTicks = 0;
+                        clearBlueprintCells(minecraft);
+                    }
                 }
                 return;
             }
             anchor = hit.getBlockPos().relative(hit.getDirection()).offset(offset);
         }
-        if (!force && anchor.equals(lastPreviewAnchor)) return;
+        blueprintTargetMissTicks = 0;
+        BuilderPreviewState.Snapshot currentPreview = BuilderPreviewState.get().snapshot();
+        boolean currentGenerationIntact = currentPreview != null
+                && currentPreview.blueprintPreview()
+                && currentPreview.cells().size() == selectedBlueprint.blocks().size();
+        if (!force && anchor.equals(lastPreviewAnchor) && currentGenerationIntact) return;
         lastPreviewAnchor = anchor;
         BlueprintPlacementPlan plan = BlueprintPlacementPlan.create(selectedBlueprint, transform, anchor);
         List<BuilderPreviewState.Cell> cells = plan.blocks().stream().map(block -> {

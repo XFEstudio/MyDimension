@@ -143,6 +143,42 @@ class BuilderPreviewFocusTest {
                 replacementFirst, null, true, current.selection()));
     }
 
+    @Test
+    void emptyServerTaskUpdateDoesNotBlankClientOwnedSurfacePreview() {
+        BuilderPreviewState.Cell surface = new BuilderPreviewState.Cell(
+                new BlockPos(2, 3, 4), null, BuilderPreviewState.Kind.BUILD, true);
+        BuilderPreviewState.Selection empty = new BuilderPreviewState.Selection(
+                DIMENSION, null, null);
+        BuilderPreviewState.Snapshot current = new BuilderPreviewState.Snapshot(
+                DIMENSION, List.of(surface), empty, null, false, false, 3);
+        BuilderPreviewState.Snapshot incoming = new BuilderPreviewState.Snapshot(
+                DIMENSION, List.of(), empty, null, false, false, 4);
+
+        assertSame(current, BuilderPreviewState.mergeServerSnapshot(current, incoming, true));
+        assertSame(incoming, BuilderPreviewState.mergeServerSnapshot(current, incoming, false));
+    }
+
+    @Test
+    void emptyServerTaskUpdateRemovesOnlyCompletedMissingCells() {
+        BuilderPreviewState.Cell missing = missing(0, 0, 0);
+        BuilderPreviewState.Cell local = new BuilderPreviewState.Cell(
+                new BlockPos(1, 0, 0), null, BuilderPreviewState.Kind.BUILD, true);
+        BuilderPreviewState.Selection selection = new BuilderPreviewState.Selection(
+                DIMENSION, new BlockPos(5, 5, 5), new BlockPos(6, 6, 6));
+        BuilderPreviewState.Snapshot current = new BuilderPreviewState.Snapshot(
+                DIMENSION, List.of(missing, local), selection,
+                UUID.randomUUID(), false, true, 8);
+        BuilderPreviewState.Snapshot incoming = new BuilderPreviewState.Snapshot(
+                DIMENSION, List.of(), selection, null, false, true, 9);
+
+        BuilderPreviewState.Snapshot merged = BuilderPreviewState.mergeServerSnapshot(
+                current, incoming, true);
+
+        assertEquals(List.of(local), merged.cells());
+        assertNull(merged.activeJobId());
+        assertTrue(merged.selection().complete());
+    }
+
     private static Map<BlockPos, BuilderPreviewState.MissingTarget> index(
             BuilderPreviewState.Cell... cells) {
         Map<BlockPos, BuilderPreviewState.Cell> byPosition = new LinkedHashMap<>();

@@ -2,13 +2,12 @@ package com.xfestudio.mydimension.client.builder;
 
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class BuilderPreviewProjectionPolicyTest {
     @Test
-    void ordinarySurfaceBuildStaysWireframeOnly() {
-        assertFalse(BuilderPreviewSectionMeshCache.permitsGhostKind(
+    void ordinarySurfaceBuildRetainsConcreteBlockProjection() {
+        assertTrue(BuilderPreviewSectionMeshCache.permitsGhostKind(
                 BuilderPreviewState.Kind.BUILD, false));
     }
 

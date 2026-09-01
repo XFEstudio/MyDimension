@@ -19,6 +19,7 @@ import java.util.List;
 /** Lightweight client prediction; the server still recomputes and authorizes every target. */
 public final class BuilderSurfacePreviewPlanner {
     private static final int VALIDATION_CELLS_PER_TICK = 256;
+    private static final int TARGET_MISS_GRACE_TICKS = 2;
     private static PreviewKey lastKey;
     private static boolean showingSurfacePreview;
     private static BuilderPreviewState.Snapshot lastPlannedSnapshot;
@@ -26,6 +27,7 @@ public final class BuilderSurfacePreviewPlanner {
     private static int validationCursor;
     private static Direction lastFace;
     private static BlockState lastOverride;
+    private static int targetMissTicks;
 
     private BuilderSurfacePreviewPlanner() { }
 
@@ -40,10 +42,12 @@ public final class BuilderSurfacePreviewPlanner {
         BuilderClientSnapshot settings = BuilderClientServices.snapshot();
         HitResult picked = minecraft.player.pick(settings.reach(), 1.0F, false);
         if (!(picked instanceof BlockHitResult hit) || picked.getType() != HitResult.Type.BLOCK) {
+            if (showingSurfacePreview && ++targetMissTicks < TARGET_MISS_GRACE_TICKS) return;
             if (showingSurfacePreview) BuilderPreviewState.get().clear();
             reset();
             return;
         }
+        targetMissTicks = 0;
         BlockState override = minecraft.player.getOffhandItem().getItem() instanceof BlockItem blockItem
                 ? blockItem.getBlock().defaultBlockState() : null;
         PreviewKey key = new PreviewKey(minecraft.level, hit.getBlockPos().immutable(), hit.getDirection(),
@@ -78,6 +82,7 @@ public final class BuilderSurfacePreviewPlanner {
         validationCursor = 0;
         lastFace = null;
         lastOverride = null;
+        targetMissTicks = 0;
     }
 
     private static List<BuilderPreviewState.Cell> plan(ClientLevel level, BlockHitResult hit,
