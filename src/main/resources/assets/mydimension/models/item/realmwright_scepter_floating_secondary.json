@@ -14,8 +14,8 @@
       "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "south": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "west": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "east": { "uv": [0, 0, 16, 16], "texture": "#crystal" } }
     },
     {
-      "name": "floating_shard_far_right", "from": [19.0, 22.0, 6.9], "to": [20.4, 24.8, 9.1],
-      "rotation": { "origin": [19.7, 23.4, 8], "axis": "z", "angle": 22.5, "rescale": true }, "shade": false,
+      "name": "floating_shard_upper_right", "from": [13.3, 28.0, 7.1], "to": [14.2, 29.5, 8.9],
+      "rotation": { "origin": [13.75, 28.75, 8], "axis": "z", "angle": -22.5, "rescale": true }, "shade": false,
       "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "south": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "west": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "east": { "uv": [0, 0, 16, 16], "texture": "#crystal" } }
     }
   ]

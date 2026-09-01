@@ -128,6 +128,43 @@ public final class BuilderHudRenderer {
                             ? (adjusting ? 0xFF65E9D5 : 0xFFC5A1FF)
                             : 0x8E78688E);
         }
+
+        // Keep the sectors pictogram-only, but identify the one focused action in a compact
+        // tooltip outside the wheel.  This is intentionally not drawn in the centre: the icon
+        // and adjustment chevrons remain readable, and the crosshair area stays unobstructed.
+        renderSelectedActionHint(graphics, minecraft, screenWidth, screenHeight, centerX, centerY,
+                outerRadius, active, adjusting);
+    }
+
+    private static void renderSelectedActionHint(GuiGraphics graphics, Minecraft minecraft,
+                                                  int screenWidth, int screenHeight,
+                                                  int centerX, int centerY, int outerRadius,
+                                                  BlueprintAltActionController.Action active,
+                                                  boolean adjusting) {
+        Component label = Component.translatable(active.translationKey());
+        int textWidth = minecraft.font.width(label);
+        int panelWidth = Math.min(screenWidth - 12, Math.max(72, textWidth + 24));
+        int panelHeight = 17;
+        int preferredTop = centerY + outerRadius + 8;
+        int top = preferredTop + panelHeight <= screenHeight - 4
+                ? preferredTop
+                : centerY - outerRadius - panelHeight - 8;
+        int left = Mth.clamp(centerX - panelWidth / 2, 6, Math.max(6, screenWidth - panelWidth - 6));
+        int right = left + panelWidth;
+
+        int border = adjusting ? 0xD85DE6D2 : 0xD2A77BF2;
+        int innerAccent = adjusting ? 0x6056D9C8 : 0x606D48A1;
+        graphics.fill(left + 3, top, right - 3, top + panelHeight, 0xC8140E20);
+        graphics.fill(left + 1, top + 3, right - 1, top + panelHeight - 3, 0xC8140E20);
+        graphics.fill(left + 4, top, right - 4, top + 1, border);
+        graphics.fill(left + 4, top + panelHeight - 1, right - 4, top + panelHeight, border);
+        graphics.fill(left, top + 4, left + 1, top + panelHeight - 4, border);
+        graphics.fill(right - 1, top + 4, right, top + panelHeight - 4, border);
+        graphics.fill(left + 5, top + 2, left + 7, top + panelHeight - 2, innerAccent);
+        graphics.fill(right - 7, top + 2, right - 5, top + panelHeight - 2, innerAccent);
+
+        graphics.drawCenteredString(minecraft.font, label, left + panelWidth / 2, top + 5,
+                adjusting ? 0xFFB6FFF1 : 0xFFF1E8FF);
     }
 
     private static void drawChevron(GuiGraphics graphics, int x, int y, boolean pointsRight,

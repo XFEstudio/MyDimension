@@ -29,7 +29,9 @@ public final class RealmwrightScepterRenderer extends BlockEntityWithoutLevelRen
     private static final ResourceLocation FLOATING_MODEL = model("realmwright_scepter_floating");
     private static final ResourceLocation FLOATING_SECONDARY_MODEL = model("realmwright_scepter_floating_secondary");
 
-    private static final float LOWER_RING_PIVOT_Y = -2.0F / 16.0F;
+    // Both orbit rings live on the upper shaft so neither is hidden by the hand in first person.
+    // The former lower ring is now the higher, slightly smaller orbit.
+    private static final float LOWER_RING_PIVOT_Y = 12.5F / 16.0F;
     private static final float UPPER_RING_PIVOT_Y = 8.25F / 16.0F;
 
     public RealmwrightScepterRenderer(BlockEntityRenderDispatcher dispatcher, EntityModelSet modelSet) {

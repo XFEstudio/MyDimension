@@ -44,11 +44,6 @@
       "name": "upper_ring_south_west", "from": [3.86, 7.65, 10.435], "to": [6.02, 8.85, 11.685],
       "rotation": { "origin": [4.94, 8.25, 11.06], "axis": "y", "angle": 45, "rescale": true },
       "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#body" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#body" }, "south": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "west": { "uv": [0, 0, 16, 16], "texture": "#body" }, "east": { "uv": [0, 0, 16, 16], "texture": "#body" } }
-    },
-    {
-      "name": "upper_ring_orbit_crystal", "from": [3.3, 7.25, 10.95], "to": [5.15, 9.25, 12.8],
-      "rotation": { "origin": [4.225, 8.25, 11.875], "axis": "z", "angle": -45, "rescale": true }, "shade": false,
-      "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "south": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "west": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "east": { "uv": [0, 0, 16, 16], "texture": "#crystal" } }
     }
   ]
 }

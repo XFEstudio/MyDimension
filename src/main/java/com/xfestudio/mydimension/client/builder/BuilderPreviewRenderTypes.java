@@ -68,7 +68,7 @@ public final class BuilderPreviewRenderTypes {
             false,
             RenderType.CompositeState.builder()
                     .setShaderState(new RenderStateShard.ShaderStateShard(
-                            GameRenderer::getRendertypeEntityTranslucentShader))
+                            GameRenderer::getRendertypeEntityTranslucentEmissiveShader))
                     .setTextureState(new RenderStateShard.TextureStateShard(
                             net.minecraft.world.inventory.InventoryMenu.BLOCK_ATLAS, false, false))
                     .setTransparencyState(TRANSLUCENT)

@@ -4,7 +4,9 @@ import net.minecraft.core.BlockPos;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -79,6 +81,40 @@ class BuilderPreviewGenerationPolicyTest {
         assertFalse(BuilderPreviewSectionMeshCache.requireGhostCompletion(false, false));
         assertTrue(BuilderPreviewSectionMeshCache.requireGhostCompletion(true, false));
         assertTrue(BuilderPreviewSectionMeshCache.requireGhostCompletion(false, true));
+    }
+
+    @Test
+    void boundaryDependentSectionsFormOneAtomicPublicationGroup() {
+        BuilderPreviewSectionMeshCache.SectionKey first =
+                new BuilderPreviewSectionMeshCache.SectionKey(0, 4, 0);
+        BuilderPreviewSectionMeshCache.SectionKey neighbour =
+                new BuilderPreviewSectionMeshCache.SectionKey(1, 4, 0);
+        BuilderPreviewSectionMeshCache.SectionKey independent =
+                new BuilderPreviewSectionMeshCache.SectionKey(4, 4, 0);
+        Set<BuilderPreviewSectionMeshCache.SectionKey> changed =
+                new LinkedHashSet<>(List.of(first, neighbour, independent));
+        Set<BuilderPreviewSectionMeshCache.SectionBoundary> dependencies = Set.of(
+                new BuilderPreviewSectionMeshCache.SectionBoundary(first, neighbour));
+
+        List<Set<BuilderPreviewSectionMeshCache.SectionKey>> groups =
+                BuilderPreviewSectionMeshCache.connectedPublicationGroups(
+                        changed, dependencies);
+
+        assertEquals(2, groups.size());
+        Set<BuilderPreviewSectionMeshCache.SectionKey> sharedGroup = groups.stream()
+                .filter(group -> group.contains(first)).findFirst().orElseThrow();
+        assertEquals(Set.of(first, neighbour), sharedGroup);
+        assertFalse(BuilderPreviewSectionMeshCache.publicationGroupReady(
+                sharedGroup, Set.of(first)::contains),
+                "one ready side must not expose a new/old cross-section face pair");
+        assertTrue(BuilderPreviewSectionMeshCache.publicationGroupReady(
+                sharedGroup, Set.of(first, neighbour)::contains));
+
+        Set<BuilderPreviewSectionMeshCache.SectionKey> independentGroup = groups.stream()
+                .filter(group -> group.contains(independent)).findFirst().orElseThrow();
+        assertTrue(BuilderPreviewSectionMeshCache.publicationGroupReady(
+                independentGroup, Set.of(independent)::contains),
+                "unrelated sections retain their one-section progressive publication");
     }
 
     private static BuilderPreviewState.Snapshot snapshot(int cellCount, int revision) {
