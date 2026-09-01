@@ -3,7 +3,6 @@ package com.xfestudio.mydimension.client.builder;
 import com.mojang.blaze3d.platform.Window;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
@@ -99,64 +98,44 @@ public final class BuilderHudRenderer {
                     selected ? 0xE0192036 : 0xC0181324);
             BuilderRadialWheelPainter.drawRing(graphics, x, y, badgeRadius - 1, badgeRadius + 1,
                     selected ? (adjusting ? 0xFF67E9D5 : 0xFFC09AFF) : 0xA35D5077);
-            drawGlyph(graphics, minecraft.font, actions.get(index).glyph(), x, y,
-                    selected ? 1.18F : 0.82F, selected ? 0xFFFFFFFF : 0xFFD2CBE2);
+            BuilderWheelIconPainter.draw(graphics, actions.get(index), x, y,
+                    selected ? 0.90F : 0.72F,
+                    selected ? 0xFFFFFFFF : 0xFFD2CBE2,
+                    selected ? (adjusting ? 0xFF6EF5DE : 0xFFD2AFFF) : 0xFFA58EC5);
         }
 
-        // The wheel is lowered enough that its transparent center leaves the vanilla crosshair unobscured.
-        Component label = Component.translatable(active.translationKey());
-        int panelHalfWidth = Math.max(27, innerRadius - 3);
-        graphics.fill(centerX - panelHalfWidth, centerY - 14,
-                centerX + panelHalfWidth, centerY + 14, 0xC51A1128);
-        graphics.fill(centerX - panelHalfWidth, centerY - 14,
-                centerX + panelHalfWidth, centerY - 12, adjusting ? 0xD957E4D1 : 0xD39168E9);
-        String modeMarker = adjusting ? "<  ALT  >" : "ALT  " + (selectedIndex + 1) + "/" + actions.size();
-        graphics.drawCenteredString(minecraft.font, modeMarker, centerX, centerY - 11,
-                adjusting ? 0xFF74EBD9 : 0xFFD5B9FF);
-        drawScaledCentered(graphics, minecraft.font, label, centerX, centerY + 5,
-                panelHalfWidth * 2 - 7, 0xFFFFFFFF);
+        // No action labels: the centre repeats the active pictogram at a larger scale.  In
+        // adjustment mode, opposing chevrons communicate that the wheel changes its value.
+        BuilderRadialWheelPainter.drawDisc(graphics, centerX, centerY, innerRadius - 4, 0xB0181027);
+        BuilderRadialWheelPainter.drawRing(graphics, centerX, centerY, innerRadius - 5,
+                innerRadius - 3, adjusting ? 0xB861E9D4 : 0x9A8D69E8);
+        BuilderWheelIconPainter.draw(graphics, active, centerX, centerY - 2, 1.12F,
+                0xFFFFFFFF, adjusting ? 0xFF67E9D5 : 0xFFC9A8FF);
+        if (adjusting) {
+            drawChevron(graphics, centerX - innerRadius + 7, centerY - 2, false, 0xFF73EAD7);
+            drawChevron(graphics, centerX + innerRadius - 7, centerY - 2, true, 0xFF73EAD7);
+        }
 
-        Component hint = Component.translatable(adjusting
-                ? "hud.mydimension.realmwright.alt_adjust_hint"
-                : "screen.mydimension.realmwright.alt_help");
-        drawHint(graphics, minecraft.font, hint, centerX,
-                Math.max(5, centerY - outerRadius - 17), Math.max(32, screenWidth - 20),
-                adjusting ? 0xFFFFD977 : 0xFFE1D5F3);
+        // Nine dots preserve position feedback without reintroducing textual page numbers.
+        int indicatorY = centerY + innerRadius - 9;
+        int indicatorSpacing = 3;
+        int indicatorStart = centerX - (actions.size() - 1) * indicatorSpacing / 2;
+        for (int index = 0; index < actions.size(); index++) {
+            int dotX = indicatorStart + index * indicatorSpacing;
+            int dotRadius = index == selectedIndex ? 1 : 0;
+            BuilderRadialWheelPainter.drawDisc(graphics, dotX, indicatorY, dotRadius,
+                    index == selectedIndex
+                            ? (adjusting ? 0xFF65E9D5 : 0xFFC5A1FF)
+                            : 0x8E78688E);
+        }
     }
 
-    private static void drawGlyph(GuiGraphics graphics, Font font, String glyph, int x, int y,
-                                  float scale, int color) {
-        graphics.pose().pushPose();
-        graphics.pose().translate(x, y, 0.0F);
-        graphics.pose().scale(scale, scale, 1.0F);
-        graphics.drawCenteredString(font, glyph, 0, -font.lineHeight / 2, color);
-        graphics.pose().popPose();
-    }
-
-    private static void drawScaledCentered(GuiGraphics graphics, Font font, Component text,
-                                           int x, int y, int maximumWidth, int color) {
-        int naturalWidth = Math.max(1, font.width(text));
-        float scale = Math.min(1.0F, maximumWidth / (float) naturalWidth);
-        graphics.pose().pushPose();
-        graphics.pose().translate(x, y, 0.0F);
-        graphics.pose().scale(scale, scale, 1.0F);
-        graphics.drawCenteredString(font, text, 0, -font.lineHeight / 2, color);
-        graphics.pose().popPose();
-    }
-
-    private static void drawHint(GuiGraphics graphics, Font font, Component hint, int centerX,
-                                 int y, int maximumWidth, int color) {
-        int naturalWidth = Math.max(1, font.width(hint));
-        float scale = Math.min(1.0F, (maximumWidth - 12) / (float) naturalWidth);
-        int visibleWidth = Mth.ceil(naturalWidth * scale);
-        graphics.fill(centerX - visibleWidth / 2 - 6, y - 2,
-                centerX + visibleWidth / 2 + 6, y + 11, 0xA9140D21);
-        graphics.fill(centerX - visibleWidth / 2 - 6, y - 2,
-                centerX - visibleWidth / 2 - 3, y + 11, 0xB555DCCB);
-        graphics.pose().pushPose();
-        graphics.pose().translate(centerX, y + 2, 0.0F);
-        graphics.pose().scale(scale, scale, 1.0F);
-        graphics.drawCenteredString(font, hint, 0, 0, color);
-        graphics.pose().popPose();
+    private static void drawChevron(GuiGraphics graphics, int x, int y, boolean pointsRight,
+                                    int color) {
+        int direction = pointsRight ? 1 : -1;
+        for (int offset = -2; offset <= 2; offset++) {
+            int horizontal = x + direction * (2 - Math.abs(offset));
+            graphics.fill(horizontal, y + offset, horizontal + 1, y + offset + 1, color);
+        }
     }
 }

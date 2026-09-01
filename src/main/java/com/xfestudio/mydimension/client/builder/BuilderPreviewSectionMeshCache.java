@@ -47,6 +47,8 @@ final class BuilderPreviewSectionMeshCache {
     private static final double OUTLINE_HALF_WIDTH = 0.010D;
     private static final int WAVE_CELLS_PER_UPLOAD = 256;
     private static final int MODEL_CELLS_PER_UPLOAD = 128;
+    /** Prevents adjacent projected models from owning two exactly coplanar faces. */
+    private static final float GHOST_MODEL_INSET = 0.0025F;
     private static final Set<ResourceLocation> WARNED_MODEL_TYPES = new HashSet<>();
 
     @Nullable
@@ -152,7 +154,10 @@ final class BuilderPreviewSectionMeshCache {
                     .inflate(0.02D);
             this.cells = List.copyOf(cells);
             waveCells = createWaveCells(cells, missingGhostPositions, originX, originY, originZ);
-            hasGhosts = cells.stream().anyMatch(BuilderPreviewState.Cell::ghost);
+            // BUILD previews deliberately remain wireframes. Besides matching the tool's visual
+            // language, excluding them here prevents the adjacent full-cube faces that used to
+            // shimmer at green-frame junctions.
+            hasGhosts = cells.stream().anyMatch(BuilderPreviewSectionMeshCache::isGhostCell);
         }
 
         private boolean matches(List<BuilderPreviewState.Cell> replacement,
@@ -220,12 +225,13 @@ final class BuilderPreviewSectionMeshCache {
             PoseStack pose = new PoseStack();
             for (int index = start; index < end; index++) {
                 BuilderPreviewState.Cell cell = cells.get(index);
-                if (!cell.ghost() || cell.state().isAir()
-                        || cell.state().getRenderShape() == RenderShape.INVISIBLE) continue;
+                if (!isGhostCell(cell)) continue;
                 pose.pushPose();
-                pose.translate(cell.pos().getX() - originX,
-                        cell.pos().getY() - originY,
-                        cell.pos().getZ() - originZ);
+                pose.translate(cell.pos().getX() - originX + GHOST_MODEL_INSET,
+                        cell.pos().getY() - originY + GHOST_MODEL_INSET,
+                        cell.pos().getZ() - originZ + GHOST_MODEL_INSET);
+                float modelScale = 1.0F - GHOST_MODEL_INSET * 2.0F;
+                pose.scale(modelScale, modelScale, modelScale);
                 VertexConsumer tinted = new GhostVertexConsumer(builder, cell.kind());
                 MultiBufferSource singleBuffer = ignored -> tinted;
                 try {
@@ -367,6 +373,13 @@ final class BuilderPreviewSectionMeshCache {
                 && !cell.state().isAir();
     }
 
+    /** Only material projections need a concrete model; BUILD is always a green wireframe. */
+    private static boolean isGhostCell(BuilderPreviewState.Cell cell) {
+        return cell.ghost() && cell.kind() != BuilderPreviewState.Kind.BUILD
+                && !cell.state().isAir()
+                && cell.state().getRenderShape() != RenderShape.INVISIBLE;
+    }
+
     private static List<WaveCell> createWaveCells(List<BuilderPreviewState.Cell> cells,
                                                    LongSet missingGhostPositions,
                                                    int originX, int originY, int originZ) {
@@ -403,7 +416,9 @@ final class BuilderPreviewSectionMeshCache {
             red = 1.0F - mix + kind.red() * mix;
             green = 1.0F - mix + kind.green() * mix;
             blue = 1.0F - mix + kind.blue() * mix;
-            alpha = kind == BuilderPreviewState.Kind.MISSING ? 0.46F : 0.36F;
+            // Keep the material recognizable at a glance without making it indistinguishable
+            // from a real placed block. These values remain translucent and shader-pack safe.
+            alpha = kind == BuilderPreviewState.Kind.MISSING ? 0.72F : 0.62F;
         }
 
         @Override

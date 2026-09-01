@@ -2,6 +2,7 @@ package com.xfestudio.mydimension.builder.blueprint;
 
 import com.xfestudio.mydimension.MyDimension;
 import com.xfestudio.mydimension.builder.BuilderSurfaceRateLimiter;
+import com.xfestudio.mydimension.builder.BuilderSurfaceTaskManager;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
@@ -18,6 +19,7 @@ public final class BlueprintServerEvents {
     public static void serverTick(TickEvent.ServerTickEvent event) {
         if (event.phase == TickEvent.Phase.END) {
             BlueprintServerService.get(event.getServer()).tick();
+            BuilderSurfaceTaskManager.get(event.getServer()).tick();
             BlueprintTaskManager.get(event.getServer()).tick();
         }
     }
@@ -26,14 +28,24 @@ public final class BlueprintServerEvents {
     public static void playerLogout(PlayerEvent.PlayerLoggedOutEvent event) {
         if (event.getEntity() instanceof ServerPlayer player) {
             BuilderSurfaceRateLimiter.removePlayer(player.getServer(), player.getUUID());
+            BuilderSurfaceTaskManager.get(player.getServer()).removePlayer(player);
             BlueprintTaskManager.get(player.getServer()).pausePlayer(player);
             BlueprintServerService.get(player.getServer()).removePlayer(player);
         }
     }
 
     @SubscribeEvent
+    public static void playerChangedDimension(PlayerEvent.PlayerChangedDimensionEvent event) {
+        if (event.getEntity() instanceof ServerPlayer player) {
+            BlueprintServerService.get(player.getServer()).clearSelection(player.getUUID());
+            BuilderSurfaceTaskManager.get(player.getServer()).removePlayer(player);
+        }
+    }
+
+    @SubscribeEvent
     public static void serverStopping(ServerStoppingEvent event) {
         BuilderSurfaceRateLimiter.shutdown(event.getServer());
+        BuilderSurfaceTaskManager.shutdown(event.getServer());
         BlueprintTaskManager.shutdown(event.getServer());
         BlueprintServerService.shutdown(event.getServer());
     }

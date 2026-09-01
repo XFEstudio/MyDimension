@@ -18,6 +18,7 @@ import com.xfestudio.mydimension.client.builder.blueprint.ClientBlueprintLibrary
 import com.xfestudio.mydimension.network.blueprint.BlueprintCaptureRequestPacket;
 import com.xfestudio.mydimension.network.blueprint.BlueprintPlaceRequestPacket;
 import com.xfestudio.mydimension.network.blueprint.BlueprintSelectionStartPacket;
+import com.xfestudio.mydimension.network.blueprint.BlueprintSelectionCancelPacket;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
@@ -266,6 +267,7 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
     }
 
     public static void cancelBlueprintWorkflow() {
+        ModNetwork.CHANNEL.sendToServer(new BlueprintSelectionCancelPacket());
         clearBlueprintSession();
         BuilderPreviewState.get().clearLocalWorkflow();
     }
@@ -286,6 +288,7 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
 
     /** Cancels only the source-corner workflow; an already copied deployment remains selected. */
     public static void cancelSourceSelection() {
+        ModNetwork.CHANNEL.sendToServer(new BlueprintSelectionCancelPacket());
         INSTANCE.pendingSelectionCapture = null;
         BuilderPreviewState.get().clearSelection();
     }

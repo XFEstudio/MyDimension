@@ -1,89 +1,80 @@
 package com.xfestudio.mydimension.client.builder;
 
-import com.xfestudio.mydimension.MyDimension;
-import com.xfestudio.mydimension.registry.ModBlocks;
+import com.xfestudio.mydimension.builder.RealmwrightData;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
-import net.minecraft.resources.ResourceKey;
-import net.minecraft.world.level.ChunkPos;
-import net.minecraft.world.level.Level;
-import net.minecraft.world.level.chunk.ChunkStatus;
-import net.minecraft.world.level.chunk.LevelChunk;
-import net.minecraftforge.api.distmarker.Dist;
-import net.minecraftforge.event.level.ChunkEvent;
-import net.minecraftforge.eventbus.api.SubscribeEvent;
-import net.minecraftforge.fml.common.Mod;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.item.ItemStack;
 
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
+import java.util.UUID;
 
 /**
- * Client-only index of supply anchors in loaded chunks.
+ * Client-only purple-outline view of the anchors bound to the current main-hand scepter.
  *
- * <p>Chunk events populate/remove whole sections immediately. A small tick-side
- * reconciliation budget catches block-entity additions inside an already loaded
- * chunk without walking world blocks or scanning anything per render frame.</p>
+ * <p>The ordered UUID list on that exact item is the whitelist. Locations come only from the
+ * server's lightweight builder snapshot, which in turn resolves the UUIDs through
+ * {@code AnchorIndexSavedData}. Nothing here scans chunks, looks through block entities, or asks
+ * the client/server to load a remote anchor chunk merely for rendering.</p>
  */
-@Mod.EventBusSubscriber(modid = MyDimension.MOD_ID, bus = Mod.EventBusSubscriber.Bus.FORGE,
-        value = Dist.CLIENT)
 public final class BuilderAnchorPreviewTracker {
-    private static final int CHUNKS_RECONCILED_PER_TICK = 64;
-    private static final Map<Long, Set<BlockPos>> BY_CHUNK = new HashMap<>();
-    private static final Map<Long, LevelChunk> TRACKED_CHUNKS = new HashMap<>();
-    private static final Set<BlockPos> ANCHORS = new LinkedHashSet<>();
+    private static final int SNAPSHOT_RETRY_TICKS = 20;
 
     private static ClientLevel trackedLevel;
-    private static ResourceKey<Level> trackedDimension;
+    private static List<UUID> trackedBindings = List.of();
+    private static List<BuilderClientSnapshot.AnchorView> trackedAnchorViews = List.of();
     private static List<BlockPos> snapshot = List.of();
-    private static int scanCenterX = Integer.MIN_VALUE;
-    private static int scanCenterZ = Integer.MIN_VALUE;
-    private static int scanRadius = -1;
-    private static int scanIndex;
-    private static List<ChunkOffset> scanOffsets = List.of();
+    private static int snapshotRequestCooldown;
 
     private BuilderAnchorPreviewTracker() {
     }
 
     static void tick(Minecraft minecraft) {
         ClientLevel level = minecraft.level;
-        if (level == null || !BuilderClientServices.isHoldingRealmwright(minecraft)) {
+        if (level == null || minecraft.player == null
+                || !BuilderClientServices.isHoldingRealmwright(minecraft)) {
             clear();
             return;
         }
-        if (trackedLevel != level || !level.dimension().equals(trackedDimension)) {
+
+        if (trackedLevel != level) {
             clear();
             trackedLevel = level;
-            trackedDimension = level.dimension();
         }
 
-        int centerX = minecraft.player.chunkPosition().x;
-        int centerZ = minecraft.player.chunkPosition().z;
-        int radius = Math.min(32, Math.max(2, minecraft.options.renderDistance().get() + 2));
-        if (centerX != scanCenterX || centerZ != scanCenterZ || radius != scanRadius) {
-            scanCenterX = centerX;
-            scanCenterZ = centerZ;
-            if (radius != scanRadius) scanOffsets = nearToFarOffsets(radius);
-            scanRadius = radius;
-            scanIndex = 0;
+        ItemStack scepter = minecraft.player.getMainHandItem();
+        List<UUID> bindings = RealmwrightData.anchors(scepter);
+        boolean bindingsChanged = !bindings.equals(trackedBindings);
+        if (bindingsChanged) {
+            // Clear the retry gate on an item/NBT change so switching or unbinding is reflected
+            // immediately instead of waiting for a request made for the previous scepter.
+            trackedBindings = bindings;
+            snapshotRequestCooldown = 0;
         }
 
-        int total = scanOffsets.size();
-        for (int checked = 0; checked < CHUNKS_RECONCILED_PER_TICK && checked < total; checked++) {
-            if (scanIndex >= total) scanIndex = 0;
-            ChunkOffset offset = scanOffsets.get(scanIndex++);
-            int chunkX = centerX + offset.x();
-            int chunkZ = centerZ + offset.z();
-            LevelChunk chunk = level.getChunkSource().getChunk(
-                    chunkX, chunkZ, ChunkStatus.FULL, false);
-            if (chunk != null) reconcile(level, chunk);
-            else removeChunk(ChunkPos.asLong(chunkX, chunkZ), null);
+        BuilderClientSnapshot serverSnapshot = BuilderClientServices.snapshot();
+        List<BuilderClientSnapshot.AnchorView> anchorViews = serverSnapshot.anchors();
+        if (bindingsChanged || !anchorViews.equals(trackedAnchorViews)) {
+            trackedAnchorViews = anchorViews;
+            snapshot = filterPositions(level.dimension().location(), bindings, anchorViews);
         }
+
+        // The item whitelist updates locally as soon as its inventory stack synchronizes. If its
+        // UUID order and the cached server metadata disagree, request only the lightweight
+        // snapshot and retry at a bounded rate. This request never acquires anchor chunk tickets.
+        if (!matchesBindings(bindings, anchorViews)) {
+            if (snapshotRequestCooldown <= 0) {
+                BuilderClientServices.bridge().requestSnapshot();
+                snapshotRequestCooldown = SNAPSHOT_RETRY_TICKS;
+            }
+        } else {
+            snapshotRequestCooldown = 0;
+        }
+        if (snapshotRequestCooldown > 0) snapshotRequestCooldown--;
     }
 
     static List<BlockPos> positions(ClientLevel level) {
@@ -92,84 +83,48 @@ public final class BuilderAnchorPreviewTracker {
 
     static void clear() {
         trackedLevel = null;
-        trackedDimension = null;
-        BY_CHUNK.clear();
-        TRACKED_CHUNKS.clear();
-        ANCHORS.clear();
+        trackedBindings = List.of();
+        trackedAnchorViews = List.of();
         snapshot = List.of();
-        scanCenterX = Integer.MIN_VALUE;
-        scanCenterZ = Integer.MIN_VALUE;
-        scanRadius = -1;
-        scanIndex = 0;
-        scanOffsets = List.of();
+        snapshotRequestCooldown = 0;
     }
 
-    @SubscribeEvent
-    public static void chunkLoaded(ChunkEvent.Load event) {
-        if (event.getLevel() instanceof ClientLevel level
-                && level == trackedLevel && event.getChunk() instanceof LevelChunk chunk) {
-            reconcile(level, chunk);
-        }
-    }
+    /**
+     * Intersects server-resolved locations with the exact ordered binding list from the held item.
+     * The returned order therefore remains the supply priority order of that scepter.
+     */
+    static List<BlockPos> filterPositions(ResourceLocation currentDimension,
+                                          List<UUID> orderedBindings,
+                                          List<BuilderClientSnapshot.AnchorView> resolvedAnchors) {
+        if (orderedBindings.isEmpty() || resolvedAnchors.isEmpty()) return List.of();
 
-    @SubscribeEvent
-    public static void chunkUnloaded(ChunkEvent.Unload event) {
-        if (event.getLevel() instanceof ClientLevel level && level == trackedLevel) {
-            removeChunk(event.getChunk().getPos().toLong(), event.getChunk());
-        }
-    }
-
-    private static void reconcile(ClientLevel level, LevelChunk chunk) {
-        Set<BlockPos> found = new HashSet<>();
-        for (BlockPos position : chunk.getBlockEntitiesPos()) {
-            if (level.getBlockState(position).is(ModBlocks.RESONANT_SUPPLY_ANCHOR.get())) {
-                found.add(position.immutable());
-            }
+        Map<UUID, BuilderClientSnapshot.AnchorView> byId = new HashMap<>(resolvedAnchors.size());
+        for (BuilderClientSnapshot.AnchorView anchor : resolvedAnchors) {
+            byId.putIfAbsent(anchor.id(), anchor);
         }
 
-        long key = chunk.getPos().toLong();
-        TRACKED_CHUNKS.put(key, chunk);
-        Set<BlockPos> previous = BY_CHUNK.get(key);
-        if (found.isEmpty()) {
-            if (previous != null) removeAnchors(key);
-            return;
+        ArrayList<BlockPos> result = new ArrayList<>(Math.min(orderedBindings.size(), byId.size()));
+        for (UUID id : orderedBindings) {
+            BuilderClientSnapshot.AnchorView anchor = byId.get(id);
+            if (anchor == null || !currentDimension.equals(anchor.dimension())
+                    || !hasResolvedLocation(anchor.status())) continue;
+            result.add(BlockPos.of(anchor.packedPos()));
         }
-        if (found.equals(previous)) return;
-        if (previous != null) ANCHORS.removeAll(previous);
-        BY_CHUNK.put(key, Set.copyOf(found));
-        ANCHORS.addAll(found);
-        snapshot = List.copyOf(ANCHORS);
+        return result.isEmpty() ? List.of() : List.copyOf(result);
     }
 
-    private static void removeChunk(long key, Object expectedChunk) {
-        if (expectedChunk != null && TRACKED_CHUNKS.get(key) != expectedChunk) return;
-        TRACKED_CHUNKS.remove(key);
-        removeAnchors(key);
-    }
-
-    private static void removeAnchors(long key) {
-        Set<BlockPos> removed = BY_CHUNK.remove(key);
-        if (removed == null || removed.isEmpty()) return;
-        ANCHORS.removeAll(removed);
-        snapshot = List.copyOf(ANCHORS);
-    }
-
-    /** Chebyshev rings make the current chunk index zero and expand near-to-far. */
-    private static List<ChunkOffset> nearToFarOffsets(int radius) {
-        ArrayList<ChunkOffset> result = new ArrayList<>((radius * 2 + 1) * (radius * 2 + 1));
-        result.add(new ChunkOffset(0, 0));
-        for (int ring = 1; ring <= radius; ring++) {
-            for (int x = -ring; x <= ring; x++) {
-                result.add(new ChunkOffset(x, -ring));
-                result.add(new ChunkOffset(x, ring));
-            }
-            for (int z = -ring + 1; z < ring; z++) {
-                result.add(new ChunkOffset(-ring, z));
-                result.add(new ChunkOffset(ring, z));
-            }
+    static boolean matchesBindings(List<UUID> orderedBindings,
+                                   List<BuilderClientSnapshot.AnchorView> resolvedAnchors) {
+        if (orderedBindings.size() != resolvedAnchors.size()) return false;
+        for (int index = 0; index < orderedBindings.size(); index++) {
+            if (!orderedBindings.get(index).equals(resolvedAnchors.get(index).id())) return false;
         }
-        return List.copyOf(result);
+        return true;
     }
 
-    private record ChunkOffset(int x, int z) { }
+    private static boolean hasResolvedLocation(BuilderClientSnapshot.AnchorStatus status) {
+        return status == BuilderClientSnapshot.AnchorStatus.AVAILABLE
+                || status == BuilderClientSnapshot.AnchorStatus.UNLOADED
+                || status == BuilderClientSnapshot.AnchorStatus.FORBIDDEN;
+    }
 }

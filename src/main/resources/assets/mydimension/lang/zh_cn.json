@@ -148,6 +148,7 @@
   "message.mydimension.builder.active_task_exists": "请先补全、撤销或取消当前筑境任务",
   "message.mydimension.builder.history_budget_exceeded": "操作已拒绝：完整撤销记录将超过服务端历史预算",
   "message.mydimension.builder.history_commit_failed": "施工已停止：事务记录未能完整提交，详情见历史冲突",
+  "message.mydimension.builder.surface_world_conflict": "施工已停止：已完成方块在批次之间发生变化，事务已标记冲突",
   "message.mydimension.builder.blueprint_complete": "蓝图建造完成：%s 格",
   "message.mydimension.builder.blueprint_waiting": "蓝图暂停：仍有 %s 格缺料",
   "message.mydimension.builder.blueprint_downgraded": "服务端权限不足：已明确降级为“仅方块状态”蓝图",

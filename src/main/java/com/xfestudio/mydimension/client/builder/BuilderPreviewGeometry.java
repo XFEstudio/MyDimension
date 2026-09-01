@@ -53,6 +53,7 @@ final class BuilderPreviewGeometry {
                          BuilderPreviewState.Kind kind, double halfWidth, float alphaScale) {
         float alpha = kind.alpha() * alphaScale;
         if (x1 != x2) {
+            halfWidth = separatedHalfWidth(halfWidth, 0, kind);
             // Four side faces form a real rectangular prism. The previous pair of
             // intersecting ribbons produced shader-pack TAA moire while moving.
             emitQuad(pose, consumer,
@@ -76,6 +77,7 @@ final class BuilderPreviewGeometry {
                     x2, y2 + halfWidth, z2 + halfWidth,
                     x1, y1 + halfWidth, z1 + halfWidth, kind, alpha);
         } else if (y1 != y2) {
+            halfWidth = separatedHalfWidth(halfWidth, 1, kind);
             emitQuad(pose, consumer,
                     x1 - halfWidth, y1, z1 - halfWidth,
                     x1 - halfWidth, y2, z2 - halfWidth,
@@ -97,6 +99,7 @@ final class BuilderPreviewGeometry {
                     x1 + halfWidth, y2, z2 + halfWidth,
                     x1 + halfWidth, y1, z1 + halfWidth, kind, alpha);
         } else if (z1 != z2) {
+            halfWidth = separatedHalfWidth(halfWidth, 2, kind);
             emitQuad(pose, consumer,
                     x1 - halfWidth, y1 - halfWidth, z1,
                     x1 - halfWidth, y1 - halfWidth, z2,
@@ -118,6 +121,18 @@ final class BuilderPreviewGeometry {
                     x1 + halfWidth, y1 + halfWidth, z2,
                     x1 + halfWidth, y1 + halfWidth, z1, kind, alpha);
         }
+    }
+
+    /**
+     * Gives perpendicular/independently-coloured prisms a deterministic sub-pixel nesting order.
+     * Their faces therefore meet instead of occupying the exact same depth at a corner, avoiding
+     * the remaining junction shimmer without changing the visible nominal line weight.
+     */
+    private static double separatedHalfWidth(double nominal, int axis,
+                                             BuilderPreviewState.Kind kind) {
+        double axisStep = Math.min(0.00075D, nominal * 0.04D);
+        double colorStep = Math.min(0.00020D, nominal * 0.004D);
+        return nominal + axis * axisStep + kind.ordinal() * colorStep;
     }
 
     static void emitWaveCube(PoseStack.Pose pose, VertexConsumer consumer,

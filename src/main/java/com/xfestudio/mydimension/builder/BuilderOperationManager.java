@@ -46,11 +46,20 @@ import java.util.Map;
 
 /** Server-authoritative execution for layer jobs and material-waiting retries. */
 public final class BuilderOperationManager {
+    /** Conservative upper bound for one ordinary state-only delta plus its small item ledger share. */
+    private static final long ORDINARY_HISTORY_ENTRY_BYTES = 4_096L;
+    /** Used only when a mod advertises a BE but cannot create a prediction instance safely. */
+    private static final long UNKNOWN_BLOCK_ENTITY_BYTES = 256L * 1_024L;
+
     private BuilderOperationManager() {
     }
 
     public static Result executeSurface(ServerPlayer player, ItemStack scepter, BlockHitResult hit) {
         if (!BuilderRuntime.settings().enabled()) return Result.disabled();
+        BuilderSurfaceTaskManager surfaceTasks = BuilderSurfaceTaskManager.get(player.getServer());
+        // Reject repeated click packets before ray validation, BFS planning, history snapshots or
+        // remote inventory access. One player never accumulates a surface-operation backlog.
+        if (surfaceTasks.hasActive(player.getUUID())) return Result.throttled();
         if (PendingBuildData.get(player.getServer()).get(player.getUUID()) != null
                 || com.xfestudio.mydimension.builder.blueprint.BlueprintTaskManager.get(player.getServer())
                 .hasActive(player.getUUID())) {
@@ -85,19 +94,12 @@ public final class BuilderOperationManager {
             return Result.throttled();
         }
 
-        UUID transactionId = UUID.randomUUID();
-        BuilderTransaction.Type transactionType = mode == BuilderMode.BUILD
-                ? BuilderTransaction.Type.BUILD : BuilderTransaction.Type.DEMOLISH;
-        if (!prepareHistory(player, scepter, transactionId, transactionType, plan.candidates(),
-                hit.getDirection(), true, Map.of())) {
-            return Result.rejected("message.mydimension.builder.history_budget_exceeded");
+        List<SurfacePlanner.Candidate> locked = lockSurfaceStates(player, plan.candidates(),
+                hit.getDirection(), mode);
+        if (!surfaceTasks.start(player, scepter, mode, locked, hit.getDirection())) {
+            return Result.throttled();
         }
-        Execution execution = mode == BuilderMode.BUILD
-                ? build(player, scepter, plan.candidates(), hit.getDirection(), transactionId, true, Map.of())
-                : demolish(player, scepter, plan.candidates(), transactionId);
-        finish(player, scepter, transactionType, transactionId, execution);
-        return new Result(execution.changed.size(), execution.missing.size(), execution.blocked,
-                plan.truncated(), null, true);
+        return new Result(0, 0, 0, plan.truncated(), null, true);
     }
 
     public static Result resumePending(ServerPlayer player, ItemStack scepter) {
@@ -115,28 +117,42 @@ public final class BuilderOperationManager {
         }
         List<SurfacePlanner.Candidate> candidates = task.missing().stream()
                 .map(entry -> new SurfacePlanner.Candidate(entry.pos(), entry.pos(), entry.state(), 0)).toList();
-        Map<BlockPos, net.minecraft.nbt.CompoundTag> blockEntities = new java.util.HashMap<>();
-        task.missing().forEach(entry -> {
-            if (entry.blockEntityTag() != null) blockEntities.put(entry.pos(), entry.blockEntityTag());
-        });
-        if (!prepareHistory(player, scepter, task.transactionId(), task.type(), candidates,
-                Direction.UP, false, blockEntities)) {
-            return Result.rejected("message.mydimension.builder.history_budget_exceeded");
+        BuilderMode mode = task.type() == BuilderTransaction.Type.DEMOLISH
+                ? BuilderMode.DEMOLISH : BuilderMode.BUILD;
+        BuilderSurfaceTaskManager manager = BuilderSurfaceTaskManager.get(player.getServer());
+        if (!manager.start(player, scepter, task.transactionId(), mode, candidates, Direction.UP)) {
+            return Result.throttled();
         }
-        Execution execution = build(player, scepter, candidates, Direction.UP, task.transactionId(), false,
-                blockEntities);
-        finish(player, scepter, task.type(), task.transactionId(), execution);
-        return new Result(execution.changed.size(), execution.missing.size(), execution.blocked, false, null, true);
+        data.remove(player.getUUID());
+        return new Result(0, task.missing().size(), 0, false, null, true);
     }
 
     public static boolean cancelPending(ServerPlayer player, ItemStack scepter) {
+        boolean activeSurface = BuilderSurfaceTaskManager.get(player.getServer()).cancel(player, scepter);
         boolean activeBlueprint = com.xfestudio.mydimension.builder.blueprint.BlueprintTaskManager
                 .get(player.getServer()).cancel(player, scepter);
         PendingBuildData data = PendingBuildData.get(player.getServer());
         PendingBuildData.Task task = data.get(player.getUUID());
-        if (task == null || !task.scepterId().equals(RealmwrightData.id(scepter))) return activeBlueprint;
+        if (task == null || !task.scepterId().equals(RealmwrightData.id(scepter))) {
+            return activeSurface || activeBlueprint;
+        }
         data.remove(player.getUUID());
         return true;
+    }
+
+    /** Locks BlockItem placement semantics at click time before a surface task is split across ticks. */
+    static List<SurfacePlanner.Candidate> lockSurfaceStates(ServerPlayer player,
+                                                            List<SurfacePlanner.Candidate> candidates,
+                                                            Direction face, BuilderMode mode) {
+        if (mode != BuilderMode.BUILD || !(player.getOffhandItem().getItem() instanceof BlockItem)) {
+            return List.copyOf(candidates);
+        }
+        List<SurfacePlanner.Candidate> locked = new ArrayList<>(candidates.size());
+        for (SurfacePlanner.Candidate candidate : candidates) {
+            locked.add(new SurfacePlanner.Candidate(candidate.reference(), candidate.target(),
+                    desiredState(player, candidate, face), candidate.distance()));
+        }
+        return List.copyOf(locked);
     }
 
     private static Execution build(ServerPlayer player, ItemStack scepter,
@@ -483,56 +499,10 @@ public final class BuilderOperationManager {
         return restored;
     }
 
-    private static void finish(ServerPlayer player, ItemStack scepter, BuilderTransaction.Type type,
-                               UUID transactionId, Execution execution) {
-        BuilderHistoryData history = BuilderHistoryData.get(player.getServer());
-        boolean recorded = true;
-        if (!execution.changed.isEmpty()) {
-            BuilderTransaction transaction = new BuilderTransaction(transactionId, RealmwrightData.id(scepter),
-                    player.level().dimension(), type, System.currentTimeMillis(), execution.changed,
-                    execution.debits, execution.credits, execution.offhandBefore, execution.offhandAfter,
-                    BuilderTransaction.State.APPLIED);
-            try {
-                recorded = history.commitPrepared(player.getUUID(), RealmwrightData.id(scepter), transaction,
-                        BuilderRuntime.settings().undoDepth());
-            } catch (RuntimeException exception) {
-                history.conflictPrepared(player.getUUID(), RealmwrightData.id(scepter), transactionId);
-                recorded = false;
-                MyDimension.LOGGER.error("Builder transaction {} could not commit its history record",
-                        transactionId, exception);
-            }
-        } else {
-            history.abortPrepared(player.getUUID(), RealmwrightData.id(scepter), transactionId);
-        }
-        PendingBuildData pending = PendingBuildData.get(player.getServer());
-        if (!recorded) {
-            boolean rolledBack = rollbackUnrecorded(player, scepter, type, transactionId, execution);
-            if (rolledBack) {
-                history.discardConflictMarker(player.getUUID(), RealmwrightData.id(scepter), transactionId);
-                execution.changed.clear();
-                execution.debits.clear();
-                execution.credits.clear();
-            }
-            PendingBuildData.Task current = pending.get(player.getUUID());
-            if (current != null && current.transactionId().equals(transactionId)) pending.remove(player.getUUID());
-            player.displayClientMessage(Component.translatable(
-                    "message.mydimension.builder.history_commit_failed"), true);
-        } else if (execution.missing.isEmpty()) {
-            PendingBuildData.Task current = pending.get(player.getUUID());
-            if (current != null && current.transactionId().equals(transactionId)) pending.remove(player.getUUID());
-        } else {
-            pending.put(player.getUUID(), new PendingBuildData.Task(RealmwrightData.id(scepter), transactionId,
-                    player.level().dimension(), type, execution.missing, System.currentTimeMillis()));
-        }
-        player.displayClientMessage(Component.translatable("message.mydimension.builder.result",
-                execution.changed.size(), execution.missing.size(), execution.blocked), true);
-    }
-
     /** Best-effort immediate compensation when the durable APPLIED record cannot replace PREPARED. */
     private static boolean rollbackUnrecorded(ServerPlayer player, ItemStack scepter,
                                               BuilderTransaction.Type type, UUID transactionId,
-                                              Execution execution) {
-        ServerLevel level = player.serverLevel();
+                                              Execution execution, ServerLevel level) {
         if (execution.changed.isEmpty()) return true;
         if (type == BuilderTransaction.Type.DEMOLISH) {
             if (!BuilderMaterials.canAndRemove(player, scepter, execution.credits,
@@ -554,7 +524,9 @@ public final class BuilderOperationManager {
             restoreDeltas(level, execution.changed, false);
             return false;
         }
-        dropOverflow(player, transactionId, BuilderMaterials.insert(player, scepter, execution.debits));
+        BlockPos dropPos = execution.changed.get(0).pos();
+        dropOverflowAt(level, dropPos, transactionId,
+                BuilderMaterials.insert(player, scepter, execution.debits));
         return true;
     }
 
@@ -677,6 +649,42 @@ public final class BuilderOperationManager {
         return player.isCreative() && BuilderRuntime.settings().creativeBypassesCosts();
     }
 
+    static SurfaceAccumulator beginSurfaceExecution(ServerPlayer player) {
+        return new SurfaceAccumulator(new Execution(player.getOffhandItem().copy()));
+    }
+
+    /** Executes one bounded slice while the whole-task PREPARED reservation remains durable. */
+    static SurfaceBatchResult executeSurfaceBatch(ServerPlayer player, ItemStack scepter,
+            BuilderMode mode, List<SurfacePlanner.Candidate> candidates, Direction face,
+            UUID transactionId, SurfaceAccumulator accumulator) {
+        Execution execution = mode == BuilderMode.BUILD
+                ? build(player, scepter, candidates, face, transactionId, false, Map.of())
+                : demolish(player, scepter, candidates, transactionId);
+        accumulator.merge(execution);
+        // Later candidates in this same slice may legitimately update the state of an earlier
+        // connected block (fences, walls, redstone shapes, and similar neighbour-aware blocks).
+        // Capture that final in-slice image immediately. The task manager validates it at the
+        // beginning of the next tick, so changes made between slices are treated as conflicts
+        // instead of being silently absorbed into the transaction.
+        accumulator.refreshAfter(player.serverLevel());
+        return new SurfaceBatchResult(execution.changed.size(), List.copyOf(execution.missing),
+                execution.blocked);
+    }
+
+    /** Reserves enough history space for the complete surface before any batch changes the world. */
+    static boolean prepareSurfaceTask(ServerPlayer player, ItemStack scepter, UUID transactionId,
+                                      BuilderTransaction.Type type,
+                                      List<SurfacePlanner.Candidate> candidates, Direction face) {
+        return prepareHistory(player, scepter, transactionId, type, candidates, face, false, Map.of());
+    }
+
+    static boolean commitSurfaceTask(ServerPlayer player, ItemStack scepter, BuilderTransaction.Type type,
+                                     UUID transactionId, SurfaceAccumulator accumulator,
+                                     ServerLevel executionLevel, boolean worldConflict) {
+        return recordTransaction(player, scepter, type, transactionId, accumulator.execution,
+                executionLevel, !worldConflict);
+    }
+
     /** Executes one rate-limited part of an already validated blueprint. */
     public static BlueprintBatchResult executeBlueprintBatch(ServerPlayer player, ItemStack scepter,
             List<com.xfestudio.mydimension.builder.blueprint.BlueprintPlacementPlan.PlannedBlock> blocks,
@@ -705,13 +713,25 @@ public final class BuilderOperationManager {
 
     private static boolean recordTransaction(ServerPlayer player, ItemStack scepter, BuilderTransaction.Type type,
                                              UUID transactionId, Execution execution) {
+        return recordTransaction(player, scepter, type, transactionId, execution, player.serverLevel());
+    }
+
+    private static boolean recordTransaction(ServerPlayer player, ItemStack scepter, BuilderTransaction.Type type,
+                                             UUID transactionId, Execution execution,
+                                             ServerLevel executionLevel) {
+        return recordTransaction(player, scepter, type, transactionId, execution, executionLevel, true);
+    }
+
+    private static boolean recordTransaction(ServerPlayer player, ItemStack scepter, BuilderTransaction.Type type,
+                                             UUID transactionId, Execution execution,
+                                             ServerLevel executionLevel, boolean rollbackOnFailure) {
         BuilderHistoryData history = BuilderHistoryData.get(player.getServer());
         if (execution.changed.isEmpty()) {
             history.abortPrepared(player.getUUID(), RealmwrightData.id(scepter), transactionId);
             return true;
         }
         BuilderTransaction transaction = new BuilderTransaction(transactionId, RealmwrightData.id(scepter),
-                player.level().dimension(), type, System.currentTimeMillis(), execution.changed,
+                executionLevel.dimension(), type, System.currentTimeMillis(), execution.changed,
                 execution.debits, execution.credits, execution.offhandBefore, execution.offhandAfter,
                 BuilderTransaction.State.APPLIED);
         boolean committed;
@@ -721,11 +741,15 @@ public final class BuilderOperationManager {
         } catch (RuntimeException exception) {
             history.conflictPrepared(player.getUUID(), RealmwrightData.id(scepter), transactionId);
             committed = false;
-            MyDimension.LOGGER.error("Blueprint transaction {} could not commit its history record",
+            MyDimension.LOGGER.error("Builder transaction {} could not commit its history record",
                     transactionId, exception);
         }
         if (!committed) {
-            boolean rolledBack = rollbackUnrecorded(player, scepter, type, transactionId, execution);
+            // Never compensate a task after its recorded after-image stopped matching the world:
+            // doing so could overwrite another player's/mod's intervening change. The durable
+            // conflict marker is the only safe result in that case.
+            boolean rolledBack = rollbackOnFailure && rollbackUnrecorded(player, scepter, type,
+                    transactionId, execution, executionLevel);
             if (rolledBack) {
                 history.discardConflictMarker(player.getUUID(), RealmwrightData.id(scepter), transactionId);
                 execution.changed.clear();
@@ -772,6 +796,11 @@ public final class BuilderOperationManager {
                 BlockState targetState = level.getBlockState(target);
                 for (BlockPos pos : demolitionAffectedPositions(target, targetState)) {
                     if (!estimatedDemolitionPositions.add(pos)) continue;
+                    BlockEntity existingBlockEntity = level.getBlockEntity(pos);
+                    if (existingBlockEntity == null) {
+                        estimate = saturatedAdd(estimate, ordinaryHistoryEntryBytes(type));
+                        continue;
+                    }
                     WorldDelta.Snapshot before = WorldDelta.snapshot(level, pos);
                     WorldDelta predicted = new WorldDelta(pos, before.state(), before.blockEntity(),
                             net.minecraft.world.level.block.Blocks.AIR.defaultBlockState(), null);
@@ -784,10 +813,25 @@ public final class BuilderOperationManager {
             }
 
             BlockPos pos = candidate.target();
-            WorldDelta.Snapshot before = WorldDelta.snapshot(level, pos);
+            BlockState beforeState = level.getBlockState(pos);
             BlockState afterState = allowOffhandOverride ? desiredState(player, candidate, face)
                     : candidate.desiredState();
             net.minecraft.nbt.CompoundTag afterBlockEntity = blockEntityTags.get(pos);
+            if (afterBlockEntity == null && afterState.hasBlockEntity()) {
+                afterBlockEntity = predictBlockEntityTag(pos, afterState);
+                if (afterBlockEntity == null) {
+                    estimate = saturatedAdd(estimate, saturatedAdd(ordinaryHistoryEntryBytes(type),
+                            UNKNOWN_BLOCK_ENTITY_BYTES));
+                    continue;
+                }
+            }
+            BlockEntity existingBlockEntity = level.getBlockEntity(pos);
+            if (existingBlockEntity == null && afterBlockEntity == null) {
+                estimate = saturatedAdd(estimate, ordinaryHistoryEntryBytes(type));
+                continue;
+            }
+            WorldDelta.Snapshot before = existingBlockEntity == null
+                    ? new WorldDelta.Snapshot(beforeState, null) : WorldDelta.snapshot(level, pos);
             WorldDelta predicted = new WorldDelta(pos, before.state(), before.blockEntity(), afterState,
                     afterBlockEntity);
             long entry = 512L + Integer.toUnsignedLong(predicted.save().sizeInBytes());
@@ -796,6 +840,20 @@ public final class BuilderOperationManager {
             estimate = saturatedAdd(estimate, entry);
         }
         return estimate;
+    }
+
+    static long ordinaryHistoryEntryBytes(BuilderTransaction.Type type) {
+        return ORDINARY_HISTORY_ENTRY_BYTES;
+    }
+
+    private static net.minecraft.nbt.CompoundTag predictBlockEntityTag(BlockPos pos, BlockState state) {
+        if (!(state.getBlock() instanceof net.minecraft.world.level.block.EntityBlock entityBlock)) return null;
+        try {
+            BlockEntity predicted = entityBlock.newBlockEntity(pos, state);
+            return predicted == null ? null : predicted.saveWithFullMetadata();
+        } catch (RuntimeException exception) {
+            return null;
+        }
     }
 
     private static long stackBytes(ItemStack stack) {
@@ -898,6 +956,53 @@ public final class BuilderOperationManager {
 
     public record BlueprintBatchResult(int changed, List<PendingBuildData.Entry> missing, int blocked,
                                        boolean committed) {
+    }
+
+    public record SurfaceBatchResult(int changed, List<PendingBuildData.Entry> missing, int blocked) {
+    }
+
+    static final class SurfaceAccumulator {
+        private final Execution execution;
+
+        private SurfaceAccumulator(Execution execution) {
+            this.execution = execution;
+        }
+
+        ItemStack initialOffhand() {
+            return execution.offhandBefore.copy();
+        }
+
+        boolean matchesAfter(ServerLevel level) {
+            try {
+                for (WorldDelta delta : execution.changed) {
+                    if (!delta.matchesAfter(level)) return false;
+                }
+                return true;
+            } catch (RuntimeException exception) {
+                return false;
+            }
+        }
+
+        void refreshAfter(ServerLevel level) {
+            if (execution.changed.isEmpty()) return;
+            List<WorldDelta> refreshed = new ArrayList<>(execution.changed.size());
+            for (WorldDelta delta : execution.changed) {
+                WorldDelta.Snapshot after = WorldDelta.snapshot(level, delta.pos());
+                refreshed.add(new WorldDelta(delta.pos(), delta.beforeState(), delta.beforeBlockEntity(),
+                        after.state(), after.blockEntity()));
+            }
+            execution.changed.clear();
+            execution.changed.addAll(refreshed);
+        }
+
+        private void merge(Execution batch) {
+            execution.changed.addAll(batch.changed);
+            execution.missing.addAll(batch.missing);
+            batch.debits.forEach(stack -> addLedgerStack(execution.debits, stack));
+            batch.credits.forEach(stack -> addLedgerStack(execution.credits, stack));
+            execution.offhandAfter = batch.offhandAfter.copy();
+            execution.blocked += batch.blocked;
+        }
     }
 
     private record BuildAttempt(SurfacePlanner.Candidate candidate, BlockState desired, ItemStack cost,

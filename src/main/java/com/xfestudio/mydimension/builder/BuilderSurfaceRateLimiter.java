@@ -48,7 +48,11 @@ public final class BuilderSurfaceRateLimiter {
     }
 
     static int delayTicks(int candidateCount, int editsPerTick) {
-        long candidates = Math.max(1L, candidateCount);
+        return delayTicks(BuilderMode.BUILD, candidateCount, editsPerTick);
+    }
+
+    static int delayTicks(BuilderMode mode, int candidateCount, int editsPerTick) {
+        long candidates = Math.max(1L, BuilderSurfaceTaskManager.budgetCost(mode, candidateCount));
         long budget = Math.max(1L, editsPerTick);
         return (int) Math.min(Integer.MAX_VALUE, (candidates + budget - 1L) / budget);
     }
@@ -61,8 +65,12 @@ public final class BuilderSurfaceRateLimiter {
         }
 
         boolean tryAcquire(long now, int candidateCount, int editsPerTick) {
+            return tryAcquire(now, BuilderMode.BUILD, candidateCount, editsPerTick);
+        }
+
+        boolean tryAcquire(long now, BuilderMode mode, int candidateCount, int editsPerTick) {
             if (isCoolingDown(now)) return false;
-            int delay = delayTicks(candidateCount, editsPerTick);
+            int delay = delayTicks(mode, candidateCount, editsPerTick);
             nextEligibleTick = now > Long.MAX_VALUE - delay ? Long.MAX_VALUE : now + delay;
             return true;
         }
@@ -87,7 +95,7 @@ public final class BuilderSurfaceRateLimiter {
         boolean tryAcquire(UUID playerId, UUID scepterId, BuilderMode mode, long now,
                            int candidateCount, int editsPerTick) {
             return players.computeIfAbsent(playerId, ignored -> new PermitWindow())
-                    .tryAcquire(now, candidateCount, editsPerTick);
+                    .tryAcquire(now, mode, candidateCount, editsPerTick);
         }
 
         void remove(UUID playerId) {

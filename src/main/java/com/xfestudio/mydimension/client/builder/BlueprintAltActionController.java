@@ -34,19 +34,6 @@ public final class BlueprintAltActionController {
             return "action.mydimension.realmwright.blueprint." + name().toLowerCase(java.util.Locale.ROOT);
         }
 
-        public String glyph() {
-            return switch (this) {
-                case FLIP_X -> "FX";
-                case FLIP_Y -> "FY";
-                case FLIP_Z -> "FZ";
-                case ROTATE_Y -> "RY";
-                case OFFSET_X -> "+X";
-                case OFFSET_Y -> "+Y";
-                case OFFSET_Z -> "+Z";
-                case RESET -> "R";
-                case SAVE -> "S";
-            };
-        }
     }
 
     public enum Phase {

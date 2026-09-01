@@ -127,6 +127,17 @@ public final class BuilderHistoryData extends SavedData {
         }
     }
 
+    /** Marks the just-committed operation non-executable when its world image changed mid-task. */
+    public boolean conflictApplied(UUID playerId, UUID wandId, UUID transactionId) {
+        History history = histories.get(new HistoryKey(playerId, wandId));
+        BuilderTransaction latest = history == null ? null : history.undo.peekLast();
+        if (latest == null || !latest.id().equals(transactionId)
+                || latest.state() != BuilderTransaction.State.APPLIED) return false;
+        latest.setState(BuilderTransaction.State.CONFLICTED);
+        setDirty();
+        return true;
+    }
+
     /** Removes only the empty marker produced by a failed commit after the caller fully rolled back. */
     public void discardConflictMarker(UUID playerId, UUID wandId, UUID transactionId) {
         History history = histories.get(new HistoryKey(playerId, wandId));

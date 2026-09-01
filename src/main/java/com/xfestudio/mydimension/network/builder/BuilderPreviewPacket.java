@@ -2,6 +2,7 @@ package com.xfestudio.mydimension.network.builder;
 
 import com.xfestudio.mydimension.builder.PendingBuildData;
 import com.xfestudio.mydimension.builder.RealmwrightData;
+import com.xfestudio.mydimension.builder.BuilderSurfaceTaskManager;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.resources.ResourceLocation;
@@ -31,6 +32,13 @@ public record BuilderPreviewPacket(ResourceLocation dimension, List<Cell> cells,
     }
 
     public static BuilderPreviewPacket from(ServerPlayer player, ItemStack scepter) {
+        BuilderSurfaceTaskManager.Status running = BuilderSurfaceTaskManager.get(player.getServer()).status(player);
+        if (running.transactionId() != null) {
+            // An empty authoritative task snapshot freezes client-side surface replanning while the world
+            // changes underneath the queued operation. No per-tick full preview packet is necessary.
+            return new BuilderPreviewPacket(player.level().dimension().location(), List.of(),
+                    null, null, running.transactionId(), false, true, revision(player));
+        }
         PendingBuildData.Task task = PendingBuildData.get(player.getServer()).get(player.getUUID());
         if (task == null || !task.scepterId().equals(RealmwrightData.id(scepter))) {
             return new BuilderPreviewPacket(player.level().dimension().location(), List.of(),

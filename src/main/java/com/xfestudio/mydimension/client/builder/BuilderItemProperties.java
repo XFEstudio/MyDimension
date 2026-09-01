@@ -12,7 +12,10 @@ import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.event.lifecycle.FMLClientSetupEvent;
 import net.minecraftforge.registries.ForgeRegistries;
 
-/** Registers the model predicate used to swap build/demolish item models. */
+/**
+ * Registers the model predicate used to recolor the scepter's animated rift core.
+ * Both child models inherit one immutable body model and override only its effect texture.
+ */
 @Mod.EventBusSubscriber(modid = MyDimension.MOD_ID, bus = Mod.EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)
 public final class BuilderItemProperties {
     public static final ResourceLocation MODE_PROPERTY =

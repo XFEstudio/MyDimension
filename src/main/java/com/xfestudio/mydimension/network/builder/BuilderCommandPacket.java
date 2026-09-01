@@ -4,6 +4,7 @@ import com.xfestudio.mydimension.builder.BuilderHistoryService;
 import com.xfestudio.mydimension.builder.BuilderMode;
 import com.xfestudio.mydimension.builder.BuilderNetworkBridge;
 import com.xfestudio.mydimension.builder.BuilderOperationManager;
+import com.xfestudio.mydimension.builder.BuilderSurfaceTaskManager;
 import com.xfestudio.mydimension.builder.BuilderRuntime;
 import com.xfestudio.mydimension.builder.BuilderReachValidator;
 import com.xfestudio.mydimension.builder.PendingBuildData;
@@ -226,8 +227,14 @@ public final class BuilderCommandPacket {
             case RESUME -> resume(player, scepter, packet.id);
             case CANCEL -> cancel(player, scepter, packet.id);
             case CANCEL_BLUEPRINT -> cancelBlueprint(player, scepter);
-            case UNDO -> BuilderHistoryService.undo(player, scepter);
-            case REDO -> BuilderHistoryService.redo(player, scepter);
+            case UNDO -> {
+                BuilderSurfaceTaskManager.get(player.getServer()).cancel(player, scepter);
+                BuilderHistoryService.undo(player, scepter);
+            }
+            case REDO -> {
+                BuilderSurfaceTaskManager.get(player.getServer()).cancel(player, scepter);
+                BuilderHistoryService.redo(player, scepter);
+            }
             case UNBIND_ANCHOR -> AnchorBindings.unbind(scepter, packet.id);
             case MOVE_ANCHOR -> moveAnchor(scepter, packet.id, packet.first);
             case SET_ANCHOR_PUBLIC -> updateAnchorAcl(player, packet.id, null, packet.first != 0);
@@ -296,9 +303,11 @@ public final class BuilderCommandPacket {
     private static void cancel(ServerPlayer player, ItemStack scepter, @Nullable UUID requestedJob) {
         com.xfestudio.mydimension.builder.blueprint.BlueprintTaskManager manager =
                 com.xfestudio.mydimension.builder.blueprint.BlueprintTaskManager.get(player.getServer());
+        BuilderSurfaceTaskManager surfaceManager = BuilderSurfaceTaskManager.get(player.getServer());
         if (requestedJob == null) {
             BlueprintServerService.get(player.getServer()).cancelQueuedPlacement(player);
             manager.cancel(player, scepter);
+            surfaceManager.cancel(player, scepter);
             PendingBuildData.Task pending = PendingBuildData.get(player.getServer()).get(player.getUUID());
             if (pending != null && pending.scepterId().equals(RealmwrightData.id(scepter))) {
                 BuilderOperationManager.cancelPending(player, scepter);
@@ -306,6 +315,11 @@ public final class BuilderCommandPacket {
             return;
         }
         com.xfestudio.mydimension.builder.blueprint.BlueprintTaskManager.Status running = manager.status(player);
+        BuilderSurfaceTaskManager.Status runningSurface = surfaceManager.status(player);
+        if (requestedJob.equals(runningSurface.transactionId())) {
+            surfaceManager.cancel(player, scepter, requestedJob);
+            return;
+        }
         if (requestedJob != null && requestedJob.equals(running.transactionId())) {
             manager.cancel(player, scepter);
             return;

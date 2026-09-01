@@ -147,6 +147,7 @@
   "message.mydimension.builder.active_task_exists": "Complete, undo, or cancel the current builder task first",
   "message.mydimension.builder.history_budget_exceeded": "Operation refused: its complete undo record exceeds the server history budget",
   "message.mydimension.builder.history_commit_failed": "Construction stopped: the transaction record could not be committed; see its history conflict",
+  "message.mydimension.builder.surface_world_conflict": "Construction stopped: a completed block changed between batches; the transaction is conflicted",
   "message.mydimension.builder.blueprint_complete": "Blueprint completed: %s blocks",
   "message.mydimension.builder.blueprint_waiting": "Blueprint paused with %s blocks awaiting materials",
   "message.mydimension.builder.blueprint_downgraded": "Server permission is insufficient; capture was explicitly downgraded to block states only",

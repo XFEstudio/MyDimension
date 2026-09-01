@@ -34,13 +34,12 @@ import java.util.WeakHashMap;
 public final class BlueprintServerService {
     private static final int CAPTURE_COOLDOWN_TICKS = 20;
     private static final int PLACE_COOLDOWN_TICKS = 5;
-    private static final int SELECTION_TIMEOUT_TICKS = 20 * 120;
     private static final Map<MinecraftServer, BlueprintServerService> SERVICES = new WeakHashMap<>();
     private final MinecraftServer server;
     private final BlueprintServerCache cache = new BlueprintServerCache();
     private final Map<UUID, UploadSession> uploads = new HashMap<>();
     private final Map<UUID, Queue<QueuedPlacement>> placementQueues = new HashMap<>();
-    private final Map<UUID, SelectionSession> selections = new HashMap<>();
+    private final BlueprintSelectionStore selections = new BlueprintSelectionStore();
     private final Map<UUID, Long> lastCaptureTicks = new HashMap<>();
     private final Map<UUID, Long> lastPlaceTicks = new HashMap<>();
 
@@ -68,7 +67,7 @@ public final class BlueprintServerService {
      */
     public void beginSelection(ServerPlayer player, BlockPos first) {
         UUID playerId = player.getUUID();
-        selections.remove(playerId);
+        selections.clear(playerId);
         try {
             if (!BuilderConfig.isEnabled()
                     || !player.getMainHandItem().is(ModItems.REALMWRIGHT_SCEPTER.get())) {
@@ -76,9 +75,8 @@ public final class BlueprintServerService {
             }
             requireBuildablePosition(player, first, "Blueprint selection corner");
             requireAirAnchorReachAndSight(player, first);
-            selections.put(playerId, new SelectionSession(first.immutable(), null,
-                    player.level().dimension(), RealmwrightData.id(player.getMainHandItem()),
-                    selectionExpiry(player)));
+            selections.begin(playerId, first, player.level().dimension(),
+                    RealmwrightData.id(player.getMainHandItem()));
         } catch (Exception exception) {
             player.displayClientMessage(Component.literal(safeMessage(exception)), false);
         }
@@ -91,7 +89,7 @@ public final class BlueprintServerService {
             return;
         }
         try {
-            SelectionSession selection = requireSelection(player, first, second);
+            BlueprintSelectionStore.Selection selection = requireSelection(player, first, second);
             validateSelectionBounds(first, second);
             BlueprintSaveMode effectiveMode = mode;
             if (mode == BlueprintSaveMode.FULL && !mayUseFullData(player)) {
@@ -110,9 +108,8 @@ public final class BlueprintServerService {
             if (selection.second() == null || finishSelection) {
                 // Keep the validated pair while its source cuboid remains visible on the client. This lets
                 // SAVE be used repeatedly for Save As / replace without asking the player to select both
-                // corners again. Every successful capture refreshes the bounded server-side expiry.
-                selections.replace(player.getUUID(), selection,
-                        selection.complete(second, selectionExpiry(player)));
+                // corners again. The tiny selection lives until an actual lifecycle event clears it.
+                selections.complete(player.getUUID(), selection, second);
             }
         } catch (Exception exception) {
             sendResult(player, requestId, false, null, safeMessage(exception));
@@ -243,6 +240,8 @@ public final class BlueprintServerService {
                 || !queued.scepterId().equals(RealmwrightData.id(scepter))
                 || !queued.dimension().equals(player.level().dimension())
                 || PendingBuildData.get(server).get(player.getUUID()) != null
+                || com.xfestudio.mydimension.builder.BuilderSurfaceTaskManager.get(server)
+                .hasActive(player.getUUID())
                 || BlueprintTaskManager.get(server).hasActive(player.getUUID())) {
             return Optional.empty();
         }
@@ -271,8 +270,6 @@ public final class BlueprintServerService {
                 iterator.remove();
             }
         }
-        long selectionTime = server.overworld().getGameTime();
-        selections.entrySet().removeIf(entry -> entry.getValue().expiresAtTick() < selectionTime);
         cache.tick(tick);
     }
 
@@ -281,7 +278,7 @@ public final class BlueprintServerService {
         persistQueuedPlacement(player, placementQueues.get(playerId));
         uploads.remove(playerId);
         placementQueues.remove(playerId);
-        selections.remove(playerId);
+        selections.clear(playerId);
         lastCaptureTicks.remove(playerId);
         lastPlaceTicks.remove(playerId);
         cache.removePlayer(playerId);
@@ -310,7 +307,7 @@ public final class BlueprintServerService {
     public void clear() {
         uploads.clear();
         placementQueues.clear();
-        selections.clear();
+        selections.clearAll();
         lastCaptureTicks.clear();
         lastPlaceTicks.clear();
         cache.clear();
@@ -333,12 +330,15 @@ public final class BlueprintServerService {
         }
     }
 
-    private SelectionSession requireSelection(ServerPlayer player, BlockPos first, BlockPos second) {
-        SelectionSession selection = selections.get(player.getUUID());
-        long now = server.overworld().getGameTime();
-        if (selection == null || selection.expiresAtTick() < now) {
-            selections.remove(player.getUUID());
-            throw new IllegalArgumentException("Blueprint selection start is missing or expired");
+    public void clearSelection(UUID playerId) {
+        selections.clear(playerId);
+    }
+
+    private BlueprintSelectionStore.Selection requireSelection(ServerPlayer player, BlockPos first,
+                                                                BlockPos second) {
+        BlueprintSelectionStore.Selection selection = selections.get(player.getUUID());
+        if (selection == null) {
+            throw new IllegalArgumentException("Blueprint selection start is missing");
         }
         if (!selection.first().equals(first)) {
             throw new IllegalArgumentException("Blueprint selection start does not match the validated corner");
@@ -346,7 +346,7 @@ public final class BlueprintServerService {
         if (!selection.dimension().equals(player.level().dimension())
                 || !player.getMainHandItem().is(ModItems.REALMWRIGHT_SCEPTER.get())
                 || !selection.scepterId().equals(RealmwrightData.id(player.getMainHandItem()))) {
-            selections.remove(player.getUUID());
+            selections.clear(player.getUUID());
             throw new IllegalArgumentException("Blueprint selection tool or dimension changed");
         }
         requireBuildablePosition(player, first, "Blueprint selection corner");
@@ -366,10 +366,6 @@ public final class BlueprintServerService {
                 || !player.serverLevel().getWorldBorder().isWithinBounds(pos)) {
             throw new IllegalArgumentException(label + " is outside the buildable world");
         }
-    }
-
-    private static long selectionExpiry(ServerPlayer player) {
-        return player.getServer().overworld().getGameTime() + SELECTION_TIMEOUT_TICKS;
     }
 
     private static boolean mayUseFullData(ServerPlayer player) {
@@ -404,7 +400,9 @@ public final class BlueprintServerService {
 
     private boolean hasWorkConflict(ServerPlayer player) {
         if (PendingBuildData.get(server).get(player.getUUID()) != null
-                || BlueprintTaskManager.get(server).hasActive(player.getUUID())) {
+                || BlueprintTaskManager.get(server).hasActive(player.getUUID())
+                || com.xfestudio.mydimension.builder.BuilderSurfaceTaskManager.get(server)
+                .hasActive(player.getUUID())) {
             return true;
         }
         Queue<QueuedPlacement> queued = placementQueues.get(player.getUUID());
@@ -459,13 +457,6 @@ public final class BlueprintServerService {
     }
 
     private record UploadSession(BlueprintTransferAssembler assembler) {
-    }
-
-    private record SelectionSession(BlockPos first, BlockPos second, ResourceKey<Level> dimension,
-                                    UUID scepterId, long expiresAtTick) {
-        private SelectionSession complete(BlockPos completedSecond, long expiry) {
-            return new SelectionSession(first, completedSecond.immutable(), dimension, scepterId, expiry);
-        }
     }
 
     /** Immutable binding captured when the server accepts a placement request. */

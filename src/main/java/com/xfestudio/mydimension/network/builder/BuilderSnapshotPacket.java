@@ -2,6 +2,7 @@ package com.xfestudio.mydimension.network.builder;
 
 import com.xfestudio.mydimension.builder.BuilderMode;
 import com.xfestudio.mydimension.builder.BuilderRuntime;
+import com.xfestudio.mydimension.builder.BuilderSurfaceTaskManager;
 import com.xfestudio.mydimension.builder.PendingBuildData;
 import com.xfestudio.mydimension.builder.RealmwrightData;
 import com.xfestudio.mydimension.builder.SurfaceMatchMode;
@@ -47,6 +48,7 @@ public record BuilderSnapshotPacket(boolean enabled, BuilderMode mode, SurfaceMa
         PendingBuildData.Task pending = PendingBuildData.get(player.getServer()).get(player.getUUID());
         if (pending != null && !pending.scepterId().equals(scepterId)) pending = null;
         BlueprintTaskManager.Status running = BlueprintTaskManager.get(player.getServer()).status(player);
+        BuilderSurfaceTaskManager.Status surface = BuilderSurfaceTaskManager.get(player.getServer()).status(player);
 
         BuilderHistoryData historyData = BuilderHistoryData.get(player.getServer());
         BuilderTransaction undo = historyData.peekUndo(player.getUUID(), scepterId);
@@ -55,12 +57,17 @@ public record BuilderSnapshotPacket(boolean enabled, BuilderMode mode, SurfaceMa
                         Math.min(MAX_HISTORY, settings.undoDepth()))
                 .stream().map(History::from).toList();
 
-        int completed = running.transactionId() != null ? running.completed()
+        int completed = surface.transactionId() != null ? surface.completed()
+                : running.transactionId() != null ? running.completed()
                 : pending == null ? 0 : completedFor(pending, undo);
-        int missing = running.transactionId() != null ? running.missing()
+        int missing = surface.transactionId() != null ? surface.missing()
+                : running.transactionId() != null ? running.missing()
                 : pending == null ? 0 : pending.missing().size();
-        int total = running.transactionId() != null ? running.total() : completed + missing;
-        String status = running.transactionId() != null ? "Building blueprint"
+        int total = surface.transactionId() != null ? surface.total()
+                : running.transactionId() != null ? running.total() : completed + missing;
+        String status = surface.transactionId() != null
+                ? (surface.mode() == BuilderMode.BUILD ? "Building surface" : "Demolishing surface")
+                : running.transactionId() != null ? "Building blueprint"
                 : pending == null ? "" : "Waiting for " + missing + " block(s)";
         return new BuilderSnapshotPacket(
                 settings.enabled(),
@@ -72,7 +79,8 @@ public record BuilderSnapshotPacket(boolean enabled, BuilderMode mode, SurfaceMa
                 settings.maxDemolishLimit(),
                 Math.max(1, (int) Math.ceil(settings.blockReach())),
                 status,
-                running.transactionId() != null ? running.transactionId()
+                surface.transactionId() != null ? surface.transactionId()
+                        : running.transactionId() != null ? running.transactionId()
                         : pending == null ? null : pending.transactionId(),
                 completed,
                 total,

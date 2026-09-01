@@ -34,6 +34,8 @@ public final class BuilderPreviewRenderer {
             new BuilderPreviewSectionMeshCache();
     private static final BuilderFocusedOutlineCache FOCUSED_OUTLINE_CACHE =
             new BuilderFocusedOutlineCache();
+    private static final FocusOutlineAnimation DYNAMIC_FOCUS_ANIMATION =
+            new FocusOutlineAnimation();
 
     private BuilderPreviewRenderer() {
     }
@@ -45,6 +47,7 @@ public final class BuilderPreviewRenderer {
                 || !minecraft.level.dimension().equals(snapshot.dimension())) {
             SECTION_CACHE.clear();
             FOCUSED_OUTLINE_CACHE.clear();
+            DYNAMIC_FOCUS_ANIMATION.clear();
             return;
         }
         SECTION_CACHE.advance(snapshot, CELLS_PREPARED_PER_TICK);
@@ -53,6 +56,7 @@ public final class BuilderPreviewRenderer {
     public static void clearCache() {
         SECTION_CACHE.clear();
         FOCUSED_OUTLINE_CACHE.clear();
+        DYNAMIC_FOCUS_ANIMATION.clear();
     }
 
     public static void render(RenderLevelStageEvent event) {
@@ -61,6 +65,7 @@ public final class BuilderPreviewRenderer {
         if (!BuilderClientServices.isHoldingRealmwright(minecraft) || minecraft.level == null) {
             SECTION_CACHE.clear();
             FOCUSED_OUTLINE_CACHE.clear();
+            DYNAMIC_FOCUS_ANIMATION.clear();
             return;
         }
 
@@ -71,6 +76,7 @@ public final class BuilderPreviewRenderer {
         if (snapshot != null && !minecraft.level.dimension().equals(snapshot.dimension())) {
             SECTION_CACHE.clear();
             FOCUSED_OUTLINE_CACHE.clear();
+            DYNAMIC_FOCUS_ANIMATION.clear();
             snapshot = null;
         }
         BuilderPreviewState.Candidate candidate = BuilderPreviewState.get().controlCandidate();
@@ -94,7 +100,11 @@ public final class BuilderPreviewRenderer {
         BuilderPreviewState.MissingGroup focusedMissingGroup = focus != null
                 && focus.kind() == BuilderPreviewState.FocusKind.MISSING
                 ? focus.missingGroup() : null;
-        FOCUSED_OUTLINE_CACHE.synchronize(focusedMissingGroup);
+        long animationTime = System.nanoTime();
+        FOCUSED_OUTLINE_CACHE.synchronize(focusedMissingGroup, animationTime);
+        DYNAMIC_FOCUS_ANIMATION.update(focus != null
+                && focus.kind() != BuilderPreviewState.FocusKind.MISSING ? focus : null,
+                animationTime);
         FOCUSED_OUTLINE_CACHE.prepare(event.getFrustum(), camera, previewDistanceSqr);
 
         PoseStack poseStack = event.getPoseStack();
@@ -227,16 +237,16 @@ public final class BuilderPreviewRenderer {
             }
         }
 
-        BuilderPreviewState.Focus focus = BuilderPreviewState.get().focus();
-        boolean cachedMissingGroup = focus != null
-                && focus.kind() == BuilderPreviewState.FocusKind.MISSING
-                && focus.missingGroup() != null;
-        if (focus != null && !cachedMissingGroup
+        BuilderPreviewState.Focus focus = DYNAMIC_FOCUS_ANIMATION.renderedFocus();
+        float focusAmount = DYNAMIC_FOCUS_ANIMATION.smoothAmount();
+        if (focus != null && focusAmount > 0.001F
                 && withinDistance(focus.bounds(), camera, maximumDistanceSqr)) {
             BuilderPreviewState.Kind color = focus.kind() == BuilderPreviewState.FocusKind.MISSING
                     ? BuilderPreviewState.Kind.MISSING : BuilderPreviewState.Kind.BLUEPRINT;
+            double animatedWidth = Mth.lerp(focusAmount,
+                    NORMAL_OUTLINE_WIDTH, FOCUSED_OUTLINE_WIDTH);
             BuilderPreviewGeometry.emitBox(pose, quads, focus.bounds(),
-                    color, FOCUSED_OUTLINE_WIDTH, alphaScale, false);
+                    color, animatedWidth, alphaScale * focusAmount, false);
         }
         buffers.endBatch(renderType);
     }
@@ -256,5 +266,57 @@ public final class BuilderPreviewRenderer {
 
     static double focusedOutlineWidth() {
         return FOCUSED_OUTLINE_WIDTH;
+    }
+
+    /** Smoothly interpolates the handful of dynamic selection/deployment focus boxes. */
+    private static final class FocusOutlineAnimation {
+        private static final float DURATION_SECONDS = 0.16F;
+
+        @Nullable private BuilderPreviewState.Focus renderedFocus;
+        private boolean targetFocused;
+        private float amount;
+        private long lastNanos;
+
+        private void update(@Nullable BuilderPreviewState.Focus target, long nowNanos) {
+            if (target != null && !sameTarget(renderedFocus, target)) {
+                renderedFocus = target;
+                amount = 0.0F;
+            }
+            targetFocused = target != null;
+            if (lastNanos == 0L) {
+                lastNanos = nowNanos;
+                return;
+            }
+            float elapsed = Math.min(0.05F,
+                    Math.max(0.0F, (nowNanos - lastNanos) / 1_000_000_000.0F));
+            lastNanos = nowNanos;
+            float step = elapsed / DURATION_SECONDS;
+            amount = targetFocused
+                    ? Math.min(1.0F, amount + step)
+                    : Math.max(0.0F, amount - step);
+            if (!targetFocused && amount <= 0.0F) renderedFocus = null;
+        }
+
+        private void clear() {
+            renderedFocus = null;
+            targetFocused = false;
+            amount = 0.0F;
+            lastNanos = 0L;
+        }
+
+        @Nullable
+        private BuilderPreviewState.Focus renderedFocus() {
+            return renderedFocus;
+        }
+
+        private float smoothAmount() {
+            return amount * amount * (3.0F - 2.0F * amount);
+        }
+
+        private static boolean sameTarget(@Nullable BuilderPreviewState.Focus first,
+                                          BuilderPreviewState.Focus second) {
+            return first != null && first.kind() == second.kind()
+                    && first.bounds().equals(second.bounds());
+        }
     }
 }

@@ -17,6 +17,12 @@ class BuilderSurfaceRateLimiterTest {
     }
 
     @Test
+    void sixtyFourDemolitionsReserveFourTicksAtTheWeightedBudget() {
+        assertEquals(4, BuilderSurfaceRateLimiter.delayTicks(BuilderMode.DEMOLISH, 64, 64));
+        assertEquals(1, BuilderSurfaceRateLimiter.delayTicks(BuilderMode.DEMOLISH, 16, 64));
+    }
+
+    @Test
     void firstClickIsImmediateAndRepeatedPacketsDoNotEnterExecutionWindow() {
         BuilderSurfaceRateLimiter.PermitWindow window = new BuilderSurfaceRateLimiter.PermitWindow();
 

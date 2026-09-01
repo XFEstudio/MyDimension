@@ -44,6 +44,73 @@ public final class BuilderGameTests {
     }
 
     @GameTest(template = "empty")
+    public static void verticalWallUsesOnlyExposedSelectedFace(GameTestHelper helper) {
+        BlockPos lower = helper.absolutePos(new BlockPos(2, 2, 3));
+        BlockPos upper = helper.absolutePos(new BlockPos(2, 3, 3));
+        BlockPos diagonal = helper.absolutePos(new BlockPos(3, 3, 3));
+        helper.getLevel().setBlock(lower, Blocks.STONE.defaultBlockState(), Block.UPDATE_ALL);
+        helper.getLevel().setBlock(upper, Blocks.STONE.defaultBlockState(), Block.UPDATE_ALL);
+        helper.getLevel().setBlock(diagonal, Blocks.STONE.defaultBlockState(), Block.UPDATE_ALL);
+
+        SurfacePlanner.Plan plan = SurfacePlanner.plan(helper.getLevel(), lower, Direction.NORTH,
+                BuilderMode.DEMOLISH, SurfaceMatchMode.SAME_BLOCK, 16, null);
+
+        helper.assertTrue(plan.candidates().size() == 3,
+                "An exposed vertical wall must retain four-way and diagonal connectivity");
+        helper.assertTrue(plan.candidates().stream()
+                        .allMatch(candidate -> candidate.reference().getZ() == lower.getZ()),
+                "Vertical face traversal left its selected reference plane");
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
+    public static void groundEdgeDoesNotIncludeLowerTerrace(GameTestHelper helper) {
+        BlockPos top = helper.absolutePos(new BlockPos(1, 3, 1));
+        BlockPos topEdge = helper.absolutePos(new BlockPos(2, 3, 1));
+        BlockPos lowerTerrace = helper.absolutePos(new BlockPos(3, 2, 1));
+        helper.getLevel().setBlock(top, Blocks.STONE.defaultBlockState(), Block.UPDATE_ALL);
+        helper.getLevel().setBlock(topEdge, Blocks.STONE.defaultBlockState(), Block.UPDATE_ALL);
+        helper.getLevel().setBlock(lowerTerrace, Blocks.STONE.defaultBlockState(), Block.UPDATE_ALL);
+
+        SurfacePlanner.Plan plan = SurfacePlanner.plan(helper.getLevel(), top, Direction.UP,
+                BuilderMode.DEMOLISH, SurfaceMatchMode.SAME_BLOCK, 16, null);
+
+        helper.assertTrue(plan.candidates().size() == 2,
+                "A horizontal selected face must stop at the ground edge");
+        helper.assertTrue(plan.candidates().stream()
+                        .noneMatch(candidate -> candidate.reference().equals(lowerTerrace)),
+                "Horizontal face traversal wrapped down onto a lower terrace");
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
+    public static void solidGroundBackingCutsOffBuriedWallForBothModes(GameTestHelper helper) {
+        BlockPos visibleLower = helper.absolutePos(new BlockPos(2, 2, 3));
+        BlockPos visibleUpper = helper.absolutePos(new BlockPos(2, 3, 3));
+        BlockPos buried = helper.absolutePos(new BlockPos(2, 1, 3));
+        BlockPos solidBacking = buried.north();
+        helper.getLevel().setBlock(visibleLower, Blocks.STONE.defaultBlockState(), Block.UPDATE_ALL);
+        helper.getLevel().setBlock(visibleUpper, Blocks.STONE.defaultBlockState(), Block.UPDATE_ALL);
+        helper.getLevel().setBlock(buried, Blocks.STONE.defaultBlockState(), Block.UPDATE_ALL);
+        helper.getLevel().setBlock(solidBacking, Blocks.STONE.defaultBlockState(), Block.UPDATE_ALL);
+
+        SurfacePlanner.Plan build = SurfacePlanner.plan(helper.getLevel(), visibleLower, Direction.NORTH,
+                BuilderMode.BUILD, SurfaceMatchMode.SAME_BLOCK, 16, null);
+        SurfacePlanner.Plan demolish = SurfacePlanner.plan(helper.getLevel(), visibleLower, Direction.NORTH,
+                BuilderMode.DEMOLISH, SurfaceMatchMode.SAME_BLOCK, 16, null);
+
+        helper.assertTrue(build.candidates().stream()
+                        .noneMatch(candidate -> candidate.reference().equals(buried)),
+                "Build planning crossed a solid ground backing into the buried wall");
+        helper.assertTrue(demolish.candidates().stream()
+                        .noneMatch(candidate -> candidate.reference().equals(buried)),
+                "Demolish planning crossed a solid ground backing into the buried wall");
+        helper.assertTrue(build.candidates().size() == 2 && demolish.candidates().size() == 2,
+                "Visible wall cells were lost while excluding the buried continuation");
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
     public static void vanillaContainerFallbackResolves(GameTestHelper helper) {
         BlockPos chest = helper.absolutePos(new BlockPos(1, 1, 1));
         helper.getLevel().setBlock(chest, Blocks.CHEST.defaultBlockState(), 3);
@@ -81,8 +148,12 @@ public final class BuilderGameTests {
                 "Drop-free removal rejected a valid chest");
         helper.assertTrue(helper.getLevel().getBlockState(chest).isAir(),
                 "Drop-free removal did not clear the chest");
+        // Other GameTests in the same parallel batch intentionally drop anchor
+        // items. Assert only against the chest payload so test layout changes
+        // cannot create a false positive from a neighbouring structure.
         helper.assertTrue(helper.getLevel().getEntitiesOfClass(ItemEntity.class,
-                        new AABB(chest).inflate(2.0D)).isEmpty(),
+                        new AABB(chest).inflate(2.0D)).stream()
+                        .noneMatch(entity -> entity.getItem().is(Items.DIAMOND)),
                 "Drop-free removal leaked container item entities");
 
         BlockPos waterlogged = helper.absolutePos(new BlockPos(3, 1, 1));

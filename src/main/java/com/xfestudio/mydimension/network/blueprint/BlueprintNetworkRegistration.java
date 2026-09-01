@@ -43,6 +43,9 @@ public final class BlueprintNetworkRegistration {
         channel.messageBuilder(BlueprintSelectionStartPacket.class, id++, NetworkDirection.PLAY_TO_SERVER)
                 .encoder(BlueprintSelectionStartPacket::encode).decoder(BlueprintSelectionStartPacket::decode)
                 .consumerNetworkThread(BlueprintSelectionStartPacket::handle).add();
+        channel.messageBuilder(BlueprintSelectionCancelPacket.class, id++, NetworkDirection.PLAY_TO_SERVER)
+                .encoder(BlueprintSelectionCancelPacket::encode).decoder(BlueprintSelectionCancelPacket::decode)
+                .consumerNetworkThread(BlueprintSelectionCancelPacket::handle).add();
         return id;
     }
 }

@@ -30,17 +30,38 @@ final class BuilderFocusedOutlineCache {
     private static final int EDGES_PER_UPLOAD = 1024;
     private static final int UPLOADS_PER_FRAME = 2;
     private static final long UPLOAD_BUDGET_NANOS = 1_500_000L;
+    private static final float FOCUS_ANIMATION_SECONDS = 0.16F;
     private static final Axis[] AXES = Axis.values();
 
     @Nullable private BuilderPreviewState.MissingGroup source;
     private final Map<SectionKey, FocusSection> sections = new LinkedHashMap<>();
     private List<FocusSection> visible = List.of();
+    private boolean focusTarget;
+    private float focusAmount;
+    private long lastAnimationNanos;
 
-    void synchronize(@Nullable BuilderPreviewState.MissingGroup group) {
-        if (source == group) return;
-        clear();
-        source = group;
-        if (group == null || group.cells().isEmpty()) return;
+    /**
+     * Changes focus without destroying the previous VBO immediately. The maximum-width outline
+     * fades over the always-present normal outline, giving even a 65k-cell group a smooth grow and
+     * shrink transition without rebuilding all of its geometry every frame.
+     */
+    void synchronize(@Nullable BuilderPreviewState.MissingGroup group, long nowNanos) {
+        if (group != null && source != group) {
+            clearGeometry();
+            source = group;
+            focusAmount = 0.0F;
+            populate(group);
+        }
+        focusTarget = group != null;
+        advanceAnimation(nowNanos);
+        if (!focusTarget && focusAmount <= 0.0F && source != null) {
+            clearGeometry();
+            source = null;
+        }
+    }
+
+    private void populate(BuilderPreviewState.MissingGroup group) {
+        if (group.cells().isEmpty()) return;
 
         // Group only lightweight cell references here. Edge expansion is deferred until a
         // section is actually visible, so moving the crosshair into a 65k-cell group cannot
@@ -54,6 +75,20 @@ final class BuilderFocusedOutlineCache {
                 new FocusSection(key, List.copyOf(cells))));
     }
 
+    private void advanceAnimation(long nowNanos) {
+        if (lastAnimationNanos == 0L) {
+            lastAnimationNanos = nowNanos;
+            return;
+        }
+        float elapsed = Math.min(0.05F,
+                Math.max(0.0F, (nowNanos - lastAnimationNanos) / 1_000_000_000.0F));
+        lastAnimationNanos = nowNanos;
+        float step = elapsed / FOCUS_ANIMATION_SECONDS;
+        focusAmount = focusTarget
+                ? Math.min(1.0F, focusAmount + step)
+                : Math.max(0.0F, focusAmount - step);
+    }
+
     void prepare(Frustum frustum, Vec3 camera, double maximumDistanceSqr) {
         List<FocusSection> current = new ArrayList<>();
         for (FocusSection section : sections.values()) {
@@ -65,6 +100,7 @@ final class BuilderFocusedOutlineCache {
         current.sort(Comparator.comparingDouble(section -> section.distanceToSqr(camera)));
         visible = List.copyOf(current);
 
+        if (!focusTarget) return;
         int uploads = 0;
         long deadline = System.nanoTime() + UPLOAD_BUDGET_NANOS;
         for (FocusSection section : current) {
@@ -75,9 +111,10 @@ final class BuilderFocusedOutlineCache {
     }
 
     void draw(PoseStack poseStack, Matrix4f projection, RenderType renderType, float alpha) {
-        if (visible.isEmpty()) return;
+        float animatedAlpha = alpha * smoothFocusAmount();
+        if (visible.isEmpty() || animatedAlpha <= 0.001F) return;
         renderType.setupRenderState();
-        RenderSystem.setShaderColor(1.0F, 1.0F, 1.0F, alpha);
+        RenderSystem.setShaderColor(1.0F, 1.0F, 1.0F, animatedAlpha);
         try {
             ShaderInstance shader = RenderSystem.getShader();
             if (shader == null) return;
@@ -99,10 +136,21 @@ final class BuilderFocusedOutlineCache {
     }
 
     void clear() {
+        clearGeometry();
         source = null;
+        focusTarget = false;
+        focusAmount = 0.0F;
+        lastAnimationNanos = 0L;
+    }
+
+    private void clearGeometry() {
         visible = List.of();
         sections.values().forEach(FocusSection::close);
         sections.clear();
+    }
+
+    private float smoothFocusAmount() {
+        return focusAmount * focusAmount * (3.0F - 2.0F * focusAmount);
     }
 
     private static final class FocusSection {
