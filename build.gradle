@@ -37,12 +37,27 @@ minecraft {
         }
 
         gameTestServer {
+            // Keep automated tests isolated from the developer's normal run
+            // world so stale registries or optional-mod saves cannot affect CI.
+            workingDirectory project.file('run-gametest')
             property 'forge.enabledGameTestNamespaces', project.mod_id
         }
 
         data {
             workingDirectory project.file('run-data')
             args '--mod', project.mod_id, '--all', '--output', file('src/generated/resources/'), '--existing', file('src/main/resources/')
+        }
+    }
+}
+
+// Minecraft's GameTest runner reads SNBT templates directly from the run
+// directory.  Keep the canonical fixtures under src/test and stage them only
+// for the isolated GameTest invocation.
+tasks.matching { it.name == 'runGameTestServer' }.configureEach {
+    doFirst {
+        copy {
+            from file('src/test/resources/gameteststructures')
+            into file('run-gametest/gameteststructures')
         }
     }
 }
@@ -163,6 +178,12 @@ sourceSets.main.resources {
 
 dependencies {
     minecraft "net.minecraftforge:forge:${project.minecraft_version}-${project.forge_version}"
+    testImplementation platform('org.junit:junit-bom:5.10.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
 }
 
 tasks.named('processResources', ProcessResources).configure {

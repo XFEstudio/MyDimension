@@ -1,0 +1,44 @@
+{
+  "type": "forge:conditional",
+  "recipes": [
+    {
+      "conditions": [
+        {
+          "type": "mydimension:builder_enabled"
+        }
+      ],
+      "recipe": {
+        "type": "minecraft:crafting_shaped",
+        "category": "building",
+        "pattern": [
+          "EYE",
+          "HCH",
+          "FLF"
+        ],
+        "key": {
+          "E": {
+            "item": "minecraft:echo_shard"
+          },
+          "Y": {
+            "item": "minecraft:ender_eye"
+          },
+          "H": {
+            "item": "minecraft:hopper"
+          },
+          "C": {
+            "item": "minecraft:ender_chest"
+          },
+          "F": {
+            "item": "mydimension:mind_portal_frame"
+          },
+          "L": {
+            "item": "minecraft:lodestone"
+          }
+        },
+        "result": {
+          "item": "mydimension:resonant_supply_anchor"
+        }
+      }
+    }
+  ]
+}

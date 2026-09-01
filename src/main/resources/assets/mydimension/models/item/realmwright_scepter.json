@@ -1,0 +1,16 @@
+{
+  "parent": "builtin/entity",
+  "gui_light": "side",
+  "textures": {
+    "particle": "mydimension:item/realmwright_voidstone"
+  },
+  "display": {
+    "thirdperson_righthand": { "rotation": [0, -90, -52], "translation": [0.2, 4.4, 0.9], "scale": [0.34, 0.34, 0.34] },
+    "thirdperson_lefthand": { "rotation": [0, 90, 52], "translation": [0.2, 4.4, 0.9], "scale": [0.34, 0.34, 0.34] },
+    "firstperson_righthand": { "rotation": [0, -35, 20], "translation": [1.35, 2.8, 0.35], "scale": [0.52, 0.52, 0.52] },
+    "firstperson_lefthand": { "rotation": [0, 35, -20], "translation": [1.35, 2.8, 0.35], "scale": [0.52, 0.52, 0.52] },
+    "gui": { "rotation": [18, -35, -45], "translation": [-0.9, -0.6, 0], "scale": [0.25, 0.25, 0.25] },
+    "ground": { "rotation": [0, 0, -45], "translation": [-0.25, 2.65, 0], "scale": [0.15, 0.15, 0.15] },
+    "fixed": { "rotation": [0, 180, -45], "translation": [-0.7, -0.4, 0], "scale": [0.23, 0.23, 0.23] }
+  }
+}

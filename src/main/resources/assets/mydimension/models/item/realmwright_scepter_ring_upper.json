@@ -1,0 +1,49 @@
+{
+  "credit": "MyDimension animated upper Realmwright orbit ring",
+  "ambientocclusion": false,
+  "gui_light": "side",
+  "render_type": "minecraft:cutout",
+  "textures": {
+    "body": "mydimension:item/realmwright_voidstone",
+    "crystal": "mydimension:item/realmwright_rift_crystal",
+    "particle": "mydimension:item/realmwright_voidstone"
+  },
+  "elements": [
+    {
+      "name": "upper_ring_north", "from": [5.7, 7.65, 3.55], "to": [10.3, 8.85, 4.8],
+      "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#body" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "south": { "uv": [0, 0, 16, 16], "texture": "#body" }, "west": { "uv": [0, 0, 16, 16], "texture": "#body" }, "east": { "uv": [0, 0, 16, 16], "texture": "#body" } }
+    },
+    {
+      "name": "upper_ring_south", "from": [5.7, 7.65, 11.2], "to": [10.3, 8.85, 12.45],
+      "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#body" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#body" }, "south": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "west": { "uv": [0, 0, 16, 16], "texture": "#body" }, "east": { "uv": [0, 0, 16, 16], "texture": "#body" } }
+    },
+    {
+      "name": "upper_ring_west", "from": [3.55, 7.65, 5.7], "to": [4.8, 8.85, 10.3],
+      "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#body" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#body" }, "south": { "uv": [0, 0, 16, 16], "texture": "#body" }, "west": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "east": { "uv": [0, 0, 16, 16], "texture": "#body" } }
+    },
+    {
+      "name": "upper_ring_east", "from": [11.2, 7.65, 5.7], "to": [12.45, 8.85, 10.3],
+      "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#body" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#body" }, "south": { "uv": [0, 0, 16, 16], "texture": "#body" }, "west": { "uv": [0, 0, 16, 16], "texture": "#body" }, "east": { "uv": [0, 0, 16, 16], "texture": "#crystal" } }
+    },
+    {
+      "name": "upper_ring_north_west", "from": [3.86, 7.65, 4.315], "to": [6.02, 8.85, 5.565],
+      "rotation": { "origin": [4.94, 8.25, 4.94], "axis": "y", "angle": -45, "rescale": true },
+      "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#body" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "south": { "uv": [0, 0, 16, 16], "texture": "#body" }, "west": { "uv": [0, 0, 16, 16], "texture": "#body" }, "east": { "uv": [0, 0, 16, 16], "texture": "#body" } }
+    },
+    {
+      "name": "upper_ring_north_east", "from": [9.98, 7.65, 4.315], "to": [12.14, 8.85, 5.565],
+      "rotation": { "origin": [11.06, 8.25, 4.94], "axis": "y", "angle": 45, "rescale": true },
+      "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#body" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "south": { "uv": [0, 0, 16, 16], "texture": "#body" }, "west": { "uv": [0, 0, 16, 16], "texture": "#body" }, "east": { "uv": [0, 0, 16, 16], "texture": "#body" } }
+    },
+    {
+      "name": "upper_ring_south_east", "from": [9.98, 7.65, 10.435], "to": [12.14, 8.85, 11.685],
+      "rotation": { "origin": [11.06, 8.25, 11.06], "axis": "y", "angle": -45, "rescale": true },
+      "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#body" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#body" }, "south": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "west": { "uv": [0, 0, 16, 16], "texture": "#body" }, "east": { "uv": [0, 0, 16, 16], "texture": "#body" } }
+    },
+    {
+      "name": "upper_ring_south_west", "from": [3.86, 7.65, 10.435], "to": [6.02, 8.85, 11.685],
+      "rotation": { "origin": [4.94, 8.25, 11.06], "axis": "y", "angle": 45, "rescale": true },
+      "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#body" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#body" }, "south": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "west": { "uv": [0, 0, 16, 16], "texture": "#body" }, "east": { "uv": [0, 0, 16, 16], "texture": "#body" } }
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "credit": "MyDimension Realmwright extended lower shaft",
+  "ambientocclusion": false,
+  "gui_light": "side",
+  "render_type": "minecraft:cutout",
+  "textures": {
+    "body": "mydimension:item/realmwright_voidstone",
+    "crystal": "mydimension:item/realmwright_rift_crystal",
+    "particle": "mydimension:item/realmwright_voidstone"
+  },
+  "elements": [
+    {
+      "name": "pommel_crystal", "from": [6.9, -16.0, 6.9], "to": [9.1, -13.2, 9.1],
+      "rotation": { "origin": [8, -14.6, 8], "axis": "z", "angle": 45, "rescale": true }, "shade": false,
+      "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "south": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "west": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "east": { "uv": [0, 0, 16, 16], "texture": "#crystal" } }
+    },
+    {
+      "name": "pommel_cage", "from": [5.9, -13.6, 5.9], "to": [10.1, -11.7, 10.1],
+      "rotation": { "origin": [8, -12.65, 8], "axis": "z", "angle": 45, "rescale": true },
+      "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#body" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#body" }, "south": { "uv": [0, 0, 16, 16], "texture": "#body" }, "west": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "east": { "uv": [0, 0, 16, 16], "texture": "#crystal" } }
+    },
+    {
+      "name": "pommel_fang_right", "from": [8.55, -15.0, 7.1], "to": [10.0, -11.8, 8.9],
+      "rotation": { "origin": [8.7, -12.1, 8], "axis": "z", "angle": -22.5, "rescale": true },
+      "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#body" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#body" }, "south": { "uv": [0, 0, 16, 16], "texture": "#body" }, "west": { "uv": [0, 0, 16, 16], "texture": "#body" }, "east": { "uv": [0, 0, 16, 16], "texture": "#crystal" } }
+    },
+    {
+      "name": "pommel_fang_left", "from": [6.0, -15.0, 7.1], "to": [7.45, -11.8, 8.9],
+      "rotation": { "origin": [7.3, -12.1, 8], "axis": "z", "angle": 22.5, "rescale": true },
+      "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#body" }, "up": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "north": { "uv": [0, 0, 16, 16], "texture": "#body" }, "south": { "uv": [0, 0, 16, 16], "texture": "#body" }, "west": { "uv": [0, 0, 16, 16], "texture": "#crystal" }, "east": { "uv": [0, 0, 16, 16], "texture": "#body" } }
+    },
+    {
+      "name": "shaft_extension", "from": [7.0, -12.0, 7.0], "to": [9.0, -1.45, 9.0],
+      "faces": { "down": { "uv": [0, 0, 16, 16], "texture": "#body" }, "up": { "uv": [0, 0, 16, 16], "texture": "#body" }, "north": { "uv": [0, 0, 16, 16], "texture": "#body" }, "south": { "uv": [0, 0, 16, 16], "texture": "#body" }, "west": { "uv": [0, 0, 16, 16], "texture": "#body" }, "east": { "uv": [0, 0, 16, 16], "texture": "#body" } }
+    },
+    {
+      "name": "shaft_rift_lower_left", "from": [7.25, -10.1, 6.96], "to": [7.85, 3.55, 6.99],
+      "rotation": { "origin": [7.55, -3.27, 6.98], "axis": "z", "angle": -22.5, "rescale": false }, "shade": false,
+      "faces": { "north": { "uv": [0, 0, 16, 16], "texture": "#crystal" } }
+    },
+    {
+      "name": "shaft_rift_lower_right", "from": [8.15, -10.1, 6.96], "to": [8.75, 3.55, 6.99],
+      "rotation": { "origin": [8.45, -3.27, 6.98], "axis": "z", "angle": 22.5, "rescale": false }, "shade": false,
+      "faces": { "north": { "uv": [0, 0, 16, 16], "texture": "#crystal" } }
+    }
+  ]
+}

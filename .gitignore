@@ -31,6 +31,8 @@ bin/
 # minecraft run directory
 
 run/
+run-gametest/
+logs/
 
 # java
 

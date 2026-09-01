@@ -1,0 +1,16 @@
+{
+  "replace": false,
+  "values": [
+    "minecraft:command_block",
+    "minecraft:chain_command_block",
+    "minecraft:repeating_command_block",
+    "minecraft:structure_block",
+    "minecraft:jigsaw",
+    "minecraft:piston",
+    "minecraft:sticky_piston",
+    "minecraft:piston_head",
+    "minecraft:moving_piston",
+    "minecraft:spawner",
+    "minecraft:tnt"
+  ]
+}
