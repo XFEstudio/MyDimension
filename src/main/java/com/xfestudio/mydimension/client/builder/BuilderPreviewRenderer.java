@@ -16,6 +16,7 @@ import net.minecraftforge.client.event.RenderLevelStageEvent;
 
 import javax.annotation.Nullable;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Function;
 
 /** Renders cached projection models, rift veils, and shader-safe solid outlines. */
@@ -61,6 +62,7 @@ public final class BuilderPreviewRenderer {
 
     public static void render(RenderLevelStageEvent event) {
         if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES) return;
+        RenderSystem.assertOnRenderThread();
         Minecraft minecraft = Minecraft.getInstance();
         if (!BuilderClientServices.isHoldingRealmwright(minecraft) || minecraft.level == null) {
             SECTION_CACHE.clear();
@@ -95,12 +97,16 @@ public final class BuilderPreviewRenderer {
                 (double) FULL_MODEL_DISTANCE * FULL_MODEL_DISTANCE,
                 SECTION_UPLOADS_PER_FRAME, uploadDeadline);
         BuilderPreviewState.Snapshot renderedSnapshot = SECTION_CACHE.renderSnapshot(snapshot);
+        BuilderPreviewSectionMeshCache.ModelResidency modelResidency =
+                SECTION_CACHE.modelResidency(camera,
+                        (double) FULL_MODEL_DISTANCE * FULL_MODEL_DISTANCE);
         List<BuilderPreviewSectionMeshCache.SectionMesh> visibleSections = renderedSnapshot == null
                 ? List.of() : SECTION_CACHE.visibleSections(
                         event.getFrustum(), camera, previewDistanceSqr);
-        SECTION_CACHE.prepareVisibleSections(minecraft, visibleSections, camera,
-                (double) FULL_MODEL_DISTANCE * FULL_MODEL_DISTANCE,
+        SECTION_CACHE.prepareVisibleSections(minecraft, modelResidency, camera,
                 Math.max(0, SECTION_UPLOADS_PER_FRAME - stagedUploads), uploadDeadline);
+        Set<BuilderPreviewSectionMeshCache.SectionKey> drawableGhostSections =
+                modelResidency.drawableGhostSections();
         BuilderPreviewState.Focus focus = BuilderPreviewState.get().focus();
         if (focus != null && focus.kind() != BuilderPreviewState.FocusKind.CANDIDATE
                 && !SECTION_CACHE.represents(snapshot)) {
@@ -126,7 +132,8 @@ public final class BuilderPreviewRenderer {
         try {
             drawCachedSections(poseStack, event, visibleSections,
                     BuilderPreviewRenderTypes.ghostModel(),
-                    BuilderPreviewSectionMeshCache.SectionMesh::ghostBuffers, true, 1.0F);
+                    section -> section.ghostBuffers(drawableGhostSections),
+                    true, 1.0F);
             BuilderPreviewRenderTypes.updateWaveUniforms();
             drawCachedSections(poseStack, event, visibleSections,
                     BuilderPreviewRenderTypes.projectionWave(),

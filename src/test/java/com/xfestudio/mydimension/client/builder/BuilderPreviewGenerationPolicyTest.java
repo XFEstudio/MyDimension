@@ -84,6 +84,109 @@ class BuilderPreviewGenerationPolicyTest {
     }
 
     @Test
+    void ghostRenderingUsesResidencyAndNeverExposesPartialUploads() {
+        assertFalse(BuilderPreviewSectionMeshCache.shouldRenderGhostModels(false, false));
+        assertFalse(BuilderPreviewSectionMeshCache.shouldRenderGhostModels(false, true));
+        assertFalse(BuilderPreviewSectionMeshCache.shouldRenderGhostModels(true, false));
+        assertTrue(BuilderPreviewSectionMeshCache.shouldRenderGhostModels(true, true));
+
+        assertFalse(BuilderPreviewSectionMeshCache.shouldRenderBoundaryCap(false, false));
+        assertFalse(BuilderPreviewSectionMeshCache.shouldRenderBoundaryCap(false, true));
+        assertTrue(BuilderPreviewSectionMeshCache.shouldRenderBoundaryCap(true, false),
+                "a ready section must retain its outer face while its neighbour uploads");
+        assertFalse(BuilderPreviewSectionMeshCache.shouldRenderBoundaryCap(true, true),
+                "the cap and neighbour must switch atomically once both are drawable");
+    }
+
+    @Test
+    void directionalCapsConsumeTheirActualUploadBudget() {
+        assertEquals(1, BuilderPreviewSectionMeshCache.uploadBudgetCost(0));
+        assertEquals(1, BuilderPreviewSectionMeshCache.uploadBudgetCost(1));
+        assertEquals(4, BuilderPreviewSectionMeshCache.uploadBudgetCost(4),
+                "one main VBO plus three cap VBOs must consume four slots");
+    }
+
+    @Test
+    void modelResidencyAddsOneConnectedRingWithoutWalkingTheWholeBlueprint() {
+        BuilderPreviewSectionMeshCache.SectionKey seed =
+                new BuilderPreviewSectionMeshCache.SectionKey(0, 4, 0);
+        BuilderPreviewSectionMeshCache.SectionKey west =
+                new BuilderPreviewSectionMeshCache.SectionKey(-1, 4, 0);
+        BuilderPreviewSectionMeshCache.SectionKey east =
+                new BuilderPreviewSectionMeshCache.SectionKey(1, 4, 0);
+        BuilderPreviewSectionMeshCache.SectionKey secondRing =
+                new BuilderPreviewSectionMeshCache.SectionKey(2, 4, 0);
+        Set<BuilderPreviewSectionMeshCache.SectionBoundary> connections = Set.of(
+                new BuilderPreviewSectionMeshCache.SectionBoundary(seed, west),
+                new BuilderPreviewSectionMeshCache.SectionBoundary(seed, east),
+                new BuilderPreviewSectionMeshCache.SectionBoundary(east, secondRing));
+
+        Set<BuilderPreviewSectionMeshCache.SectionKey> residency =
+                BuilderPreviewSectionMeshCache.expandModelResidency(
+                        Set.of(seed), connections);
+
+        assertEquals(Set.of(west, seed, east), residency);
+        assertFalse(residency.contains(secondRing),
+                "guard-band expansion must not become a connected-component closure");
+    }
+
+    @Test
+    void firstGenerationScopesAtomicEdgesToResidentNeighbourhood() {
+        BuilderPreviewSectionMeshCache.SectionKey first =
+                new BuilderPreviewSectionMeshCache.SectionKey(0, 4, 0);
+        BuilderPreviewSectionMeshCache.SectionKey neighbour =
+                new BuilderPreviewSectionMeshCache.SectionKey(1, 4, 0);
+        BuilderPreviewSectionMeshCache.SectionKey remote =
+                new BuilderPreviewSectionMeshCache.SectionKey(2, 4, 0);
+        BuilderPreviewSectionMeshCache.SectionBoundary nearEdge =
+                new BuilderPreviewSectionMeshCache.SectionBoundary(first, neighbour);
+        BuilderPreviewSectionMeshCache.SectionBoundary remoteEdge =
+                new BuilderPreviewSectionMeshCache.SectionBoundary(neighbour, remote);
+
+        Set<BuilderPreviewSectionMeshCache.SectionBoundary> scoped =
+                BuilderPreviewSectionMeshCache.publicationDependenciesForResidency(
+                        Set.of(nearEdge, remoteEdge), Set.of(first, neighbour));
+        List<Set<BuilderPreviewSectionMeshCache.SectionKey>> groups =
+                BuilderPreviewSectionMeshCache.connectedPublicationGroups(
+                        Set.of(first, neighbour, remote), scoped);
+
+        assertEquals(Set.of(nearEdge), scoped);
+        assertTrue(groups.contains(Set.of(first, neighbour)),
+                "the first cross-boundary pair must publish atomically");
+        assertTrue(groups.contains(Set.of(remote)),
+                "a remote outline section must not pull the whole blueprint into the group");
+    }
+
+    @Test
+    void initialConnectedBoundaryCreatesAtomicDependency() {
+        assertTrue(BuilderPreviewSectionMeshCache.requiresAtomicBoundaryPublication(
+                false, true, true, true));
+        assertFalse(BuilderPreviewSectionMeshCache.requiresAtomicBoundaryPublication(
+                false, false, true, true));
+        assertFalse(BuilderPreviewSectionMeshCache.requiresAtomicBoundaryPublication(
+                true, true, false, false));
+    }
+
+    @Test
+    void publishedSingletonCannotFastRevertAndLeaveItsMeshBehind() {
+        Object previous = new Object();
+        Object replacement = new Object();
+
+        boolean insertedSingleton = BuilderPreviewSectionMeshCache.sectionMapEntryChanged(
+                null, replacement);
+        assertTrue(insertedSingleton,
+                "a newly published singleton must prevent the fast source-revert path");
+        assertFalse(BuilderPreviewSectionMeshCache.canFastRevertToSource(
+                true, insertedSingleton));
+        assertTrue(BuilderPreviewSectionMeshCache.canFastRevertToSource(true, false));
+        assertFalse(BuilderPreviewSectionMeshCache.canFastRevertToSource(false, false));
+        assertTrue(BuilderPreviewSectionMeshCache.sectionMapEntryChanged(previous, null));
+        assertTrue(BuilderPreviewSectionMeshCache.sectionMapEntryChanged(previous, replacement));
+        assertFalse(BuilderPreviewSectionMeshCache.sectionMapEntryChanged(previous, previous));
+        assertFalse(BuilderPreviewSectionMeshCache.sectionMapEntryChanged(null, null));
+    }
+
+    @Test
     void boundaryDependentSectionsFormOneAtomicPublicationGroup() {
         BuilderPreviewSectionMeshCache.SectionKey first =
                 new BuilderPreviewSectionMeshCache.SectionKey(0, 4, 0);

@@ -67,7 +67,8 @@ public final class SurfacePlanner {
         if (!SurfacePlaneTraversal.isReference(state)) {
             return false;
         }
-        return mode == SurfaceMatchMode.ANY_BLOCK || state.getBlock() == seed.getBlock();
+        return mode == SurfaceMatchMode.ANY_BLOCK
+                || BuilderBlockCompatibility.sameSurfaceType(seed, state);
     }
 
     public record Candidate(BlockPos reference, BlockPos target, BlockState desiredState, int distance) {

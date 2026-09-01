@@ -1,31 +1,42 @@
 package com.xfestudio.mydimension.builder;
 
+import com.mojang.authlib.GameProfile;
 import com.xfestudio.mydimension.MyDimension;
 import com.xfestudio.mydimension.builder.anchor.AnchorContainerResolver;
+import com.xfestudio.mydimension.builder.blueprint.BlueprintCapture;
 import com.xfestudio.mydimension.builder.blueprint.BlueprintData;
 import com.xfestudio.mydimension.builder.blueprint.BlueprintIo;
+import com.xfestudio.mydimension.builder.blueprint.BlueprintPlacementPlan;
 import com.xfestudio.mydimension.builder.blueprint.BlueprintSaveMode;
+import com.xfestudio.mydimension.builder.blueprint.BlueprintTransform;
 import com.xfestudio.mydimension.builder.history.BuilderTransaction;
 import com.xfestudio.mydimension.builder.history.WorldDelta;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.Container;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.LayeredCauldronBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.material.Fluids;
 import net.minecraft.world.phys.AABB;
+import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.event.level.BlockEvent;
+import net.minecraftforge.eventbus.api.EventPriority;
 import net.minecraftforge.gametest.GameTestHolder;
 import net.minecraftforge.gametest.PrefixGameTestTemplate;
 
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 @GameTestHolder(MyDimension.MOD_ID)
 @PrefixGameTestTemplate(false)
@@ -42,6 +53,30 @@ public final class BuilderGameTests {
                 BuilderMode.BUILD, SurfaceMatchMode.SAME_BLOCK, 16, null);
         helper.assertTrue(plan.candidates().size() == 2,
                 "Eight-neighbor traversal must include a diagonal block");
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
+    public static void grassAndDirtShareOnlyTheirExplicitSurfaceGroup(GameTestHelper helper) {
+        BlockPos grass = helper.absolutePos(new BlockPos(2, 2, 2));
+        BlockPos dirt = grass.east();
+        BlockPos podzol = grass.west();
+        BlockPos mycelium = grass.north();
+        helper.getLevel().setBlock(grass, Blocks.GRASS_BLOCK.defaultBlockState(), Block.UPDATE_ALL);
+        helper.getLevel().setBlock(dirt, Blocks.DIRT.defaultBlockState(), Block.UPDATE_ALL);
+        helper.getLevel().setBlock(podzol, Blocks.PODZOL.defaultBlockState(), Block.UPDATE_ALL);
+        helper.getLevel().setBlock(mycelium, Blocks.MYCELIUM.defaultBlockState(), Block.UPDATE_ALL);
+
+        SurfacePlanner.Plan plan = SurfacePlanner.plan(helper.getLevel(), grass, Direction.UP,
+                BuilderMode.DEMOLISH, SurfaceMatchMode.SAME_BLOCK, 16, null);
+
+        helper.assertTrue(plan.candidates().size() == 2
+                        && plan.candidates().stream().anyMatch(candidate -> candidate.reference().equals(grass))
+                        && plan.candidates().stream().anyMatch(candidate -> candidate.reference().equals(dirt)),
+                "Same-block traversal did not treat grass and ordinary dirt as one surface type");
+        helper.assertTrue(plan.candidates().stream().noneMatch(candidate ->
+                        candidate.reference().equals(podzol) || candidate.reference().equals(mycelium)),
+                "The explicit grass/dirt surface group accidentally included another dirt-like block");
         helper.succeed();
     }
 
@@ -135,6 +170,130 @@ public final class BuilderGameTests {
         } catch (Exception exception) {
             helper.fail(exception.getMessage());
         }
+    }
+
+    @GameTest(template = "empty")
+    public static void blueprintPreservesWaterCauldronLevel(GameTestHelper helper) {
+        BlockPos sourcePosition = helper.absolutePos(new BlockPos(1, 1, 1));
+        BlockPos targetPosition = helper.absolutePos(new BlockPos(3, 1, 1));
+        BlockPos protectedPosition = helper.absolutePos(new BlockPos(5, 1, 1));
+        BlockState sourceState = Blocks.WATER_CAULDRON.defaultBlockState()
+                .setValue(LayeredCauldronBlock.LEVEL, 3);
+        helper.getLevel().setBlock(sourcePosition, sourceState, Block.UPDATE_ALL);
+        ServerPlayer player = new ServerPlayer(helper.getLevel().getServer(), helper.getLevel(),
+                new GameProfile(UUID.randomUUID(), "blueprint-test-player"));
+        player.getInventory().setItem(9, new ItemStack(Items.CAULDRON, 2));
+        AtomicBoolean placementEventObserved = new AtomicBoolean();
+        Consumer<BlockEvent.EntityPlaceEvent> listener = event -> {
+            if (event.getEntity() != player) return;
+            if (event.getPos().equals(targetPosition)) placementEventObserved.set(true);
+            if (event.getPos().equals(protectedPosition)) event.setCanceled(true);
+        };
+
+        try {
+            MinecraftForge.EVENT_BUS.addListener(EventPriority.NORMAL, false,
+                    BlockEvent.EntityPlaceEvent.class, listener);
+            BlueprintData captured = BlueprintCapture.capture(helper.getLevel(), player,
+                    sourcePosition, sourcePosition, BlueprintSaveMode.BLOCKS_ONLY,
+                    "Water cauldron state");
+            BlueprintData decoded = BlueprintIo.decode(BlueprintIo.encode(captured));
+            BlockState decodedState = decoded.state(decoded.blocks().get(0));
+            helper.assertTrue(decodedState.equals(sourceState),
+                    "Blueprint capture/transfer changed the water-cauldron level");
+
+            ItemStack cost = BuilderOperationManager.constructionCost(decodedState);
+            helper.assertTrue(cost.is(Items.CAULDRON) && cost.getCount() == 1,
+                    "A water cauldron must consume one base cauldron item");
+
+            BlueprintPlacementPlan plan = BlueprintPlacementPlan.create(decoded,
+                    BlueprintTransform.NONE, targetPosition);
+            BuilderOperationManager.BlueprintBatchResult result =
+                    BuilderOperationManager.executeBlueprintBatch(player, ItemStack.EMPTY,
+                            plan.blocks(), UUID.randomUUID(), false);
+            helper.assertTrue(result.changed() == 1 && result.blocked() == 0
+                            && result.missing().isEmpty() && result.committed(),
+                    "Blueprint execution rejected a legal water-cauldron state");
+            helper.assertTrue(helper.getLevel().getBlockState(targetPosition).equals(sourceState),
+                    "Blueprint placement did not retain the exact water-cauldron level");
+            helper.assertTrue(player.getInventory().getItem(9).is(Items.CAULDRON)
+                            && player.getInventory().getItem(9).getCount() == 1,
+                    "Blueprint placement did not debit exactly one base cauldron item");
+            helper.assertTrue(placementEventObserved.get(),
+                    "Blueprint placement bypassed the Forge entity-place event");
+
+            BlueprintPlacementPlan protectedPlan = BlueprintPlacementPlan.create(decoded,
+                    BlueprintTransform.NONE, protectedPosition);
+            BuilderOperationManager.BlueprintBatchResult protectedResult =
+                    BuilderOperationManager.executeBlueprintBatch(player, ItemStack.EMPTY,
+                            protectedPlan.blocks(), UUID.randomUUID(), false);
+            helper.assertTrue(protectedResult.changed() == 0 && protectedResult.blocked() == 1
+                            && helper.getLevel().getBlockState(protectedPosition).isAir(),
+                    "A cancelled Forge placement event did not protect the blueprint target");
+            helper.assertTrue(player.getInventory().getItem(9).is(Items.CAULDRON)
+                            && player.getInventory().getItem(9).getCount() == 1,
+                    "A cancelled Forge placement event did not refund its reserved material");
+            helper.succeed();
+        } catch (Exception exception) {
+            helper.fail(exception.getMessage());
+        } finally {
+            MinecraftForge.EVENT_BUS.unregister(listener);
+        }
+    }
+
+    @GameTest(template = "empty")
+    public static void grassConstructionPrefersGrassThenFallsBackToDirt(GameTestHelper helper) {
+        BlockPos exactTarget = helper.absolutePos(new BlockPos(1, 1, 1));
+        BlockPos fallbackTarget = helper.absolutePos(new BlockPos(3, 1, 1));
+        BlockPos disallowedTarget = helper.absolutePos(new BlockPos(5, 1, 1));
+        BlockState grass = Blocks.GRASS_BLOCK.defaultBlockState();
+        // The final coordinate may sit just outside a small GameTest template's structure-void
+        // envelope, so make every material-policy target deterministic instead of inheriting the
+        // flat test world's grass surface.
+        helper.getLevel().setBlock(exactTarget, Blocks.AIR.defaultBlockState(), Block.UPDATE_ALL);
+        helper.getLevel().setBlock(fallbackTarget, Blocks.AIR.defaultBlockState(), Block.UPDATE_ALL);
+        helper.getLevel().setBlock(disallowedTarget, Blocks.AIR.defaultBlockState(), Block.UPDATE_ALL);
+        ServerPlayer player = new ServerPlayer(helper.getLevel().getServer(), helper.getLevel(),
+                new GameProfile(UUID.randomUUID(), "grass-material-test-player"));
+        player.getInventory().setItem(9, new ItemStack(Items.GRASS_BLOCK));
+        player.getInventory().setItem(10, new ItemStack(Items.DIRT));
+
+        BuilderOperationManager.BlueprintBatchResult exact = BuilderOperationManager.executeBlueprintBatch(
+                player, ItemStack.EMPTY,
+                List.of(new BlueprintPlacementPlan.PlannedBlock(
+                        BlockPos.ZERO, exactTarget, grass, null)), UUID.randomUUID(), false);
+        helper.assertTrue(exact.changed() == 1 && exact.missing().isEmpty()
+                        && helper.getLevel().getBlockState(exactTarget).equals(grass),
+                "Grass construction did not consume its exact grass-block material first");
+        helper.assertTrue(player.getInventory().getItem(9).isEmpty()
+                        && player.getInventory().getItem(10).is(Items.DIRT),
+                "Grass construction consumed dirt while an exact grass block was available");
+
+        BuilderOperationManager.BlueprintBatchResult fallback = BuilderOperationManager.executeBlueprintBatch(
+                player, ItemStack.EMPTY,
+                List.of(new BlueprintPlacementPlan.PlannedBlock(
+                        BlockPos.ZERO, fallbackTarget, grass, null)), UUID.randomUUID(), false);
+        helper.assertTrue(fallback.changed() == 1 && fallback.missing().isEmpty()
+                        && helper.getLevel().getBlockState(fallbackTarget).equals(grass),
+                "Grass construction reported missing material instead of falling back to ordinary dirt");
+        helper.assertTrue(player.getInventory().getItem(10).isEmpty(),
+                "Grass construction did not debit its dirt fallback");
+
+        player.getInventory().setItem(11, new ItemStack(Items.PODZOL));
+        BuilderOperationManager.BlueprintBatchResult disallowed = BuilderOperationManager.executeBlueprintBatch(
+                player, ItemStack.EMPTY,
+                List.of(new BlueprintPlacementPlan.PlannedBlock(
+                        BlockPos.ZERO, disallowedTarget, grass, null)), UUID.randomUUID(), false);
+        helper.assertTrue(disallowed.changed() == 0,
+                "Podzol-only supply unexpectedly placed " + disallowed.changed() + " grass blocks");
+        helper.assertTrue(disallowed.missing().size() == 1,
+                "Podzol-only supply produced " + disallowed.missing().size()
+                        + " missing entries instead of one");
+        helper.assertTrue(helper.getLevel().getBlockState(disallowedTarget).isAir(),
+                "Podzol-only supply changed the missing target to "
+                        + helper.getLevel().getBlockState(disallowedTarget));
+        helper.assertTrue(player.getInventory().getItem(11).is(Items.PODZOL),
+                "A dirt-like block outside the explicit rule was consumed as a grass substitute");
+        helper.succeed();
     }
 
     @GameTest(template = "empty")

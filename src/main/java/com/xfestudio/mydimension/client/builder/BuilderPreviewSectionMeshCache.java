@@ -74,6 +74,7 @@ final class BuilderPreviewSectionMeshCache {
     @Nullable
     private BuilderPreviewState.Snapshot source;
     private Map<SectionKey, SectionMesh> sections = new LinkedHashMap<>();
+    private final Set<SectionMesh> activeGhostUploads = identitySet();
     @Nullable
     private PendingGeneration pending;
     /**
@@ -102,6 +103,22 @@ final class BuilderPreviewSectionMeshCache {
     }
 
     /**
+     * Computes the concrete-model working set once for an active frame.  Sections touching the
+     * distance-limited seed set across an occupied projection boundary form a one-section guard
+     * band.  Preparation and rendering consume this same immutable result, so neither side can
+     * make a subtly different decision at the distance boundary.
+     */
+    synchronized ModelResidency modelResidency(Vec3 camera, double modelDistanceSqr) {
+        Set<SectionKey> keys = modelResidentSectionKeys(sections, camera, modelDistanceSqr);
+        Set<SectionMesh> meshes = identitySet();
+        for (SectionKey key : keys) {
+            SectionMesh section = sections.get(key);
+            if (section != null) meshes.add(section);
+        }
+        return new ModelResidency(keys, meshes);
+    }
+
+    /**
      * Builds section back buffers without exposing partial VBOs. Sections whose shared boundary
      * changed are published as one dependency group; unrelated sections still publish
      * independently. This prevents a target-side culled face from briefly meeting an old
@@ -114,7 +131,10 @@ final class BuilderPreviewSectionMeshCache {
         PendingGeneration generation = pending;
         if (generation == null) return 0;
 
-        promoteReadyGroups(generation, camera, modelDistanceSqr);
+        Set<SectionKey> modelResidency = modelResidentSectionKeys(
+                generation.sections(), camera, modelDistanceSqr);
+        generation.initializePublicationGroups(modelResidency);
+        promoteReadyGroups(generation, modelResidency);
         if (generation.fullyPublished()) {
             finishGeneration(generation);
             return 0;
@@ -133,11 +153,12 @@ final class BuilderPreviewSectionMeshCache {
                         || generation.isPublished(entry.getKey())) continue;
                 SectionMesh section = entry.getValue();
                 boolean requireModels = requireGhostCompletion(
-                        section.closestDistanceToSqr(camera) <= modelDistanceSqr,
+                        modelResidency.contains(entry.getKey()),
                         section.ghostUploadStarted());
                 if (section.ready(requireModels)) continue;
-                if (section.uploadNext(minecraft, requireModels)) {
-                    uploaded++;
+                int uploadCost = section.uploadNext(minecraft, requireModels);
+                if (uploadCost > 0) {
+                    uploaded += uploadCost;
                     progressed = true;
                     // Spend the next slot on this same nearest section. It can therefore publish
                     // in ceil(sectionUploads / frameBudget) frames instead of waiting behind every
@@ -149,7 +170,7 @@ final class BuilderPreviewSectionMeshCache {
         }
 
         if (pending == generation) {
-            promoteReadyGroups(generation, camera, modelDistanceSqr);
+            promoteReadyGroups(generation, modelResidency);
             if (generation.fullyPublished()) {
                 finishGeneration(generation);
             }
@@ -157,17 +178,34 @@ final class BuilderPreviewSectionMeshCache {
         return uploaded;
     }
 
-    /** Uploads one dirty section, then continues only while both budgets allow. */
-    synchronized void prepareVisibleSections(Minecraft minecraft, List<SectionMesh> visible,
-                                             Vec3 camera, double modelDistanceSqr,
-                                             int uploadBudget, long deadlineNanos) {
+    /**
+     * Uploads active concrete models selected by {@code residency}.  A section whose model upload
+     * already started remains in the work queue after leaving residency so it cannot become a
+     * permanently partial VBO.  Rendering still filters it through the original residency set.
+     */
+    synchronized void prepareVisibleSections(Minecraft minecraft, ModelResidency residency,
+                                             Vec3 camera, int uploadBudget,
+                                             long deadlineNanos) {
         if (uploadBudget <= 0) return;
+        Set<SectionMesh> candidates = identitySet();
+        for (SectionMesh section : residency.meshes()) {
+            if (!section.ghostModelsComplete()) candidates.add(section);
+        }
+        candidates.addAll(activeGhostUploads);
+        List<SectionMesh> work = new ArrayList<>(candidates);
+        work.sort(Comparator.comparingDouble(section -> section.closestDistanceToSqr(camera)));
         int uploaded = 0;
-        for (SectionMesh section : visible) {
+        for (SectionMesh section : work) {
             if (uploaded >= uploadBudget) break;
             if (uploaded > 0 && System.nanoTime() >= deadlineNanos) break;
-            boolean buildModels = section.closestDistanceToSqr(camera) <= modelDistanceSqr;
-            if (section.uploadNext(minecraft, buildModels)) uploaded++;
+            boolean buildModels = requireGhostCompletion(
+                    residency.contains(section), section.ghostUploadStarted());
+            int uploadCost = section.uploadNext(minecraft, buildModels);
+            if (uploadCost > 0) {
+                uploaded += uploadCost;
+                if (section.ghostUploadInProgress()) activeGhostUploads.add(section);
+                else activeGhostUploads.remove(section);
+            }
         }
     }
 
@@ -193,6 +231,7 @@ final class BuilderPreviewSectionMeshCache {
         }
         source = null;
         sections.clear();
+        activeGhostUploads.clear();
         pending = null;
         queued.clear();
     }
@@ -221,6 +260,7 @@ final class BuilderPreviewSectionMeshCache {
             queued.clear();
             sections.values().forEach(SectionMesh::close);
             sections = new LinkedHashMap<>();
+            activeGhostUploads.clear();
             source = snapshot;
             return;
         }
@@ -233,7 +273,8 @@ final class BuilderPreviewSectionMeshCache {
                 queued.clear();
                 return;
             }
-            if (source != null && sameGeometry(source, snapshot) && !pending.mutatedActive) {
+            if (source != null && canFastRevertToSource(
+                    sameGeometry(source, snapshot), pending.mutatedActive)) {
                 // No staged section has been published yet, so returning to the committed frame
                 // can safely cancel the transition without generating anything else.
                 discardPending();
@@ -300,14 +341,15 @@ final class BuilderPreviewSectionMeshCache {
             }
         }
         Set<SectionKey> changed = changedSectionKeys(sections, replacement);
-        Set<SectionBoundary> dependencies = source == null || sections.isEmpty()
-                ? Set.of() : changedBoundaryDependencies(changed, sections, replacement);
+        boolean initialGeneration = source == null || sections.isEmpty();
+        Set<SectionBoundary> dependencies = changedBoundaryDependencies(
+                changed, sections, replacement);
         pending = new PendingGeneration(snapshot, replacement, changed,
-                connectedPublicationGroups(changed, dependencies));
+                dependencies, initialGeneration);
     }
 
-    private void promoteReadyGroups(PendingGeneration generation, Vec3 camera,
-                                    double modelDistanceSqr) {
+    private void promoteReadyGroups(PendingGeneration generation,
+                                    Set<SectionKey> modelResidency) {
         if (pending != generation) return;
         for (Set<SectionKey> group : generation.publicationGroups()) {
             if (generation.isPublished(group)) continue;
@@ -315,7 +357,7 @@ final class BuilderPreviewSectionMeshCache {
                 SectionMesh section = generation.sections().get(key);
                 if (section == null) return true; // Removed sections need no back buffer.
                 boolean requireModels = requireGhostCompletion(
-                        section.closestDistanceToSqr(camera) <= modelDistanceSqr,
+                        modelResidency.contains(key),
                         section.ghostUploadStarted());
                 return section.ready(requireModels);
             };
@@ -331,10 +373,14 @@ final class BuilderPreviewSectionMeshCache {
             SectionMesh replacement = generation.sections().get(key);
             SectionMesh old = replacement == null
                     ? sections.remove(key) : sections.put(key, replacement);
+            if (sectionMapEntryChanged(old, replacement)) generation.mutatedActive = true;
+            if (old != null && old != replacement) activeGhostUploads.remove(old);
+            if (replacement != null && replacement.ghostUploadInProgress()) {
+                activeGhostUploads.add(replacement);
+            }
             if (old != null && old != replacement) replaced.add(old);
         }
         generation.markPublished(group);
-        if (!replaced.isEmpty()) generation.mutatedActive = true;
 
         // A mesh may be shared with the target map when its cells did not change. Never close a
         // buffer that is still reachable after the whole dependency group has been installed.
@@ -343,6 +389,16 @@ final class BuilderPreviewSectionMeshCache {
         replaced.forEach(mesh -> {
             if (!active.contains(mesh)) mesh.close();
         });
+    }
+
+    /** Identity, rather than value equality, defines whether the active VBO map was mutated. */
+    static boolean sectionMapEntryChanged(@Nullable Object before, @Nullable Object after) {
+        return before != after;
+    }
+
+    static boolean canFastRevertToSource(boolean committedGeometryMatches,
+                                         boolean activeMapMutated) {
+        return committedGeometryMatches && !activeMapMutated;
     }
 
     private void finishGeneration(PendingGeneration generation) {
@@ -366,6 +422,7 @@ final class BuilderPreviewSectionMeshCache {
         } else if (latest.cells().isEmpty()) {
             sections.values().forEach(SectionMesh::close);
             sections = new LinkedHashMap<>();
+            activeGhostUploads.clear();
             source = latest;
         } else {
             stageSnapshot(latest);
@@ -401,6 +458,47 @@ final class BuilderPreviewSectionMeshCache {
         if (closed.add(mesh)) mesh.close();
     }
 
+    private static Set<SectionKey> modelResidentSectionKeys(
+            Map<SectionKey, SectionMesh> candidates,
+            Vec3 camera, double modelDistanceSqr) {
+        Set<SectionKey> seeds = new LinkedHashSet<>();
+        for (Map.Entry<SectionKey, SectionMesh> entry : candidates.entrySet()) {
+            if (entry.getValue().closestDistanceToSqr(camera) <= modelDistanceSqr) {
+                seeds.add(entry.getKey());
+            }
+        }
+
+        Set<SectionBoundary> connectedEdges = new LinkedHashSet<>();
+        // Deliberately iterate only the original seeds.  Newly included neighbours form a guard
+        // band, not a transitive closure that could upload an entire remote blueprint.
+        for (SectionKey key : seeds) {
+            SectionMesh section = candidates.get(key);
+            if (section == null) continue;
+            for (Direction direction : Direction.values()) {
+                SectionKey neighbourKey = key.relative(direction);
+                SectionMesh neighbour = candidates.get(neighbourKey);
+                if (neighbour != null
+                        && projectionBoundaryConnected(section, neighbour, direction)) {
+                    connectedEdges.add(new SectionBoundary(key, neighbourKey));
+                }
+            }
+        }
+        return expandModelResidency(seeds, connectedEdges);
+    }
+
+    /** Expands only the supplied seed set by one layer of connected section-boundary edges. */
+    static Set<SectionKey> expandModelResidency(
+            Set<SectionKey> seeds, Set<SectionBoundary> connectedEdges) {
+        Set<SectionKey> result = new LinkedHashSet<>(seeds);
+        for (SectionBoundary edge : connectedEdges) {
+            boolean firstSeed = seeds.contains(edge.first());
+            boolean secondSeed = seeds.contains(edge.second());
+            if (firstSeed) result.add(edge.second());
+            if (secondSeed) result.add(edge.first());
+        }
+        return Set.copyOf(result);
+    }
+
     private static Set<SectionKey> changedSectionKeys(
             Map<SectionKey, SectionMesh> current,
             Map<SectionKey, SectionMesh> replacement) {
@@ -428,14 +526,36 @@ final class BuilderPreviewSectionMeshCache {
             for (Direction direction : positiveDirections) {
                 SectionKey neighbour = key.relative(direction);
                 if (!changed.contains(neighbour)) continue;
-                if (boundaryChanged(current.get(key), replacement.get(key), direction)
-                        || boundaryChanged(current.get(neighbour), replacement.get(neighbour),
-                        direction.getOpposite())) {
+                boolean connectedBefore = projectionBoundaryConnected(
+                        current.get(key), current.get(neighbour), direction);
+                boolean connectedAfter = projectionBoundaryConnected(
+                        replacement.get(key), replacement.get(neighbour), direction);
+                boolean firstChanged = boundaryChanged(
+                        current.get(key), replacement.get(key), direction);
+                boolean secondChanged = boundaryChanged(
+                        current.get(neighbour), replacement.get(neighbour),
+                        direction.getOpposite());
+                if (requiresAtomicBoundaryPublication(connectedBefore, connectedAfter,
+                        firstChanged, secondChanged)) {
                     dependencies.add(new SectionBoundary(key, neighbour));
                 }
             }
         }
         return dependencies;
+    }
+
+    static boolean requiresAtomicBoundaryPublication(
+            boolean connectedBefore, boolean connectedAfter,
+            boolean firstBoundaryChanged, boolean secondBoundaryChanged) {
+        return (connectedBefore || connectedAfter)
+                && (firstBoundaryChanged || secondBoundaryChanged);
+    }
+
+    private static boolean projectionBoundaryConnected(
+            @Nullable SectionMesh section, @Nullable SectionMesh neighbour,
+            Direction direction) {
+        return section != null && neighbour != null
+                && section.projectionBoundaryConnects(neighbour, direction);
     }
 
     private static boolean boundaryChanged(@Nullable SectionMesh before,
@@ -477,6 +597,23 @@ final class BuilderPreviewSectionMeshCache {
         return true;
     }
 
+    /**
+     * The first generation has no old concrete models to preserve outside the current residency.
+     * Restricting its atomic edges to that working set prevents one long, connected blueprint from
+     * delaying the nearest pair until every remote outline section has uploaded.
+     */
+    static Set<SectionBoundary> publicationDependenciesForResidency(
+            Set<SectionBoundary> dependencies, Set<SectionKey> residency) {
+        Set<SectionBoundary> result = new LinkedHashSet<>();
+        for (SectionBoundary dependency : dependencies) {
+            if (residency.contains(dependency.first())
+                    && residency.contains(dependency.second())) {
+                result.add(dependency);
+            }
+        }
+        return Set.copyOf(result);
+    }
+
     private static SectionKey find(Map<SectionKey, SectionKey> parents, SectionKey key) {
         SectionKey parent = parents.get(key);
         if (parent.equals(key)) return key;
@@ -496,23 +633,36 @@ final class BuilderPreviewSectionMeshCache {
         private BuilderPreviewState.Snapshot source;
         private final Map<SectionKey, SectionMesh> sections;
         private final Set<SectionKey> changed;
-        private final List<Set<SectionKey>> publicationGroups;
+        private final Set<SectionBoundary> dependencies;
+        private final boolean initialGeneration;
+        @Nullable private List<Set<SectionKey>> publicationGroups;
         private final Set<SectionKey> published = new HashSet<>();
         private boolean mutatedActive;
 
         private PendingGeneration(BuilderPreviewState.Snapshot source,
                                   Map<SectionKey, SectionMesh> sections,
                                   Set<SectionKey> changed,
-                                  List<Set<SectionKey>> publicationGroups) {
+                                  Set<SectionBoundary> dependencies,
+                                  boolean initialGeneration) {
             this.source = source;
             this.sections = new LinkedHashMap<>(sections);
             this.changed = Set.copyOf(changed);
-            this.publicationGroups = List.copyOf(publicationGroups);
+            this.dependencies = Set.copyOf(dependencies);
+            this.initialGeneration = initialGeneration;
         }
 
         private BuilderPreviewState.Snapshot source() { return source; }
         private Map<SectionKey, SectionMesh> sections() { return sections; }
-        private List<Set<SectionKey>> publicationGroups() { return publicationGroups; }
+        private void initializePublicationGroups(Set<SectionKey> modelResidency) {
+            if (publicationGroups != null) return;
+            Set<SectionBoundary> activeDependencies = initialGeneration
+                    ? publicationDependenciesForResidency(dependencies, modelResidency)
+                    : dependencies;
+            publicationGroups = connectedPublicationGroups(changed, activeDependencies);
+        }
+        private List<Set<SectionKey>> publicationGroups() {
+            return publicationGroups == null ? List.of() : publicationGroups;
+        }
         private boolean requiresPublication(SectionKey key) { return changed.contains(key); }
         private boolean isPublished(SectionKey key) { return published.contains(key); }
         private boolean isPublished(Set<SectionKey> group) {
@@ -563,6 +713,7 @@ final class BuilderPreviewSectionMeshCache {
     }
 
     static final class SectionMesh {
+        private final SectionKey key;
         private final int originX;
         private final int originY;
         private final int originZ;
@@ -571,11 +722,16 @@ final class BuilderPreviewSectionMeshCache {
         private final List<WaveCell> waveCells;
         private final List<Integer> visibleGhostFaces;
         private final BoundarySignature[] boundaries;
+        private final long[][] projectedBoundaryMasks;
         private final boolean includeBuildGhosts;
         private final boolean hasGhosts;
 
         @Nullable private VertexBuffer outlineBuffer;
         private final List<VertexBuffer> ghostBuffers = new ArrayList<>();
+        private final List<List<VertexBuffer>> boundaryGhostBuffers = new ArrayList<>(
+                Direction.values().length);
+        private final List<List<VertexBuffer>> ghostDrawLists = new ArrayList<>(
+                1 << Direction.values().length);
         private final List<VertexBuffer> waveBuffers = new ArrayList<>();
         private int ghostCursor;
         private int waveCursor;
@@ -583,6 +739,7 @@ final class BuilderPreviewSectionMeshCache {
         private SectionMesh(SectionKey key, List<BuilderPreviewState.Cell> cells,
                             List<WaveCell> waveCells, List<Integer> visibleGhostFaces,
                             boolean includeBuildGhosts) {
+            this.key = key;
             originX = key.x() * SECTION_SIZE;
             originY = key.y() * SECTION_SIZE;
             originZ = key.z() * SECTION_SIZE;
@@ -595,7 +752,15 @@ final class BuilderPreviewSectionMeshCache {
             this.visibleGhostFaces = List.copyOf(visibleGhostFaces);
             boundaries = createBoundarySignatures(this.cells, this.waveCells,
                     this.visibleGhostFaces, includeBuildGhosts, originX, originY, originZ);
+            projectedBoundaryMasks = createProjectedBoundaryMasks(this.cells,
+                    includeBuildGhosts, originX, originY, originZ);
             hasGhosts = cells.stream().anyMatch(cell -> isGhostCell(cell, includeBuildGhosts));
+            for (Direction ignored : Direction.values()) {
+                boundaryGhostBuffers.add(new ArrayList<>());
+            }
+            for (int ignored = 0; ignored < 1 << Direction.values().length; ignored++) {
+                ghostDrawLists.add(null);
+            }
         }
 
         private boolean matches(List<BuilderPreviewState.Cell> replacement,
@@ -608,37 +773,45 @@ final class BuilderPreviewSectionMeshCache {
                     && visibleGhostFaces.equals(replacementVisibleGhostFaces);
         }
 
-        private boolean uploadNext(Minecraft minecraft, boolean buildModels) {
+        /** @return upload-budget slots consumed, or zero when no work was available. */
+        private int uploadNext(Minecraft minecraft, boolean buildModels) {
             RenderSystem.assertOnRenderThread();
             if (outlineBuffer == null) {
                 outlineBuffer = uploadOutlineBuffer();
-                return true;
+                return uploadBudgetCost(outlineBuffer == null ? 0 : 1);
             }
             if (waveCursor < waveCells.size()) {
                 int end = Math.min(waveCells.size(), waveCursor + WAVE_CELLS_PER_UPLOAD);
                 VertexBuffer wave = uploadWaveBuffer(waveCursor, end);
                 waveCursor = end;
                 if (wave != null) waveBuffers.add(wave);
-                return true;
+                return uploadBudgetCost(wave == null ? 0 : 1);
             }
             if (hasGhosts && buildModels && ghostCursor < cells.size()) {
                 int end = Math.min(cells.size(), ghostCursor + MODEL_CELLS_PER_UPLOAD);
-                VertexBuffer ghost = uploadGhostBuffer(minecraft, ghostCursor, end);
+                int uploadedBuffers = uploadGhostBuffers(minecraft, ghostCursor, end);
                 ghostCursor = end;
-                if (ghost != null) ghostBuffers.add(ghost);
-                return true;
+                return uploadBudgetCost(uploadedBuffers);
             }
-            return false;
+            return 0;
         }
 
         private boolean ready(boolean requireModels) {
             return outlineBuffer != null
                     && waveCursor >= waveCells.size()
-                    && (!requireModels || !hasGhosts || ghostCursor >= cells.size());
+                    && (!requireModels || ghostModelsComplete());
+        }
+
+        private boolean ghostModelsComplete() {
+            return !hasGhosts || ghostCursor >= cells.size();
         }
 
         private boolean ghostUploadStarted() {
             return ghostCursor > 0;
+        }
+
+        private boolean ghostUploadInProgress() {
+            return ghostUploadStarted() && !ghostModelsComplete();
         }
 
         @Nullable
@@ -669,25 +842,29 @@ final class BuilderPreviewSectionMeshCache {
             return upload(builder);
         }
 
-        @Nullable
-        private VertexBuffer uploadGhostBuffer(Minecraft minecraft, int start, int end) {
+        private int uploadGhostBuffers(Minecraft minecraft, int start, int end) {
             BufferBuilder builder = new BufferBuilder(Math.max(4096, (end - start) * 1024));
             builder.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.NEW_ENTITY);
+            BufferBuilder[] boundaryBuilders = new BufferBuilder[Direction.values().length];
             PoseStack pose = new PoseStack();
             for (int index = start; index < end; index++) {
                 BuilderPreviewState.Cell cell = cells.get(index);
                 if (!isGhostCell(cell, includeBuildGhosts)) continue;
+                int localX = cell.pos().getX() - originX;
+                int localY = cell.pos().getY() - originY;
+                int localZ = cell.pos().getZ() - originZ;
                 pose.pushPose();
-                pose.translate(cell.pos().getX() - originX + GHOST_MODEL_INSET,
-                        cell.pos().getY() - originY + GHOST_MODEL_INSET,
-                        cell.pos().getZ() - originZ + GHOST_MODEL_INSET);
+                pose.translate(localX + GHOST_MODEL_INSET,
+                        localY + GHOST_MODEL_INSET,
+                        localZ + GHOST_MODEL_INSET);
                 float modelScale = 1.0F - GHOST_MODEL_INSET * 2.0F;
                 pose.scale(modelScale, modelScale, modelScale);
                 VertexConsumer tinted = new GhostVertexConsumer(builder, cell.kind());
                 MultiBufferSource singleBuffer = ignored -> tinted;
                 try {
                     renderGhostBlock(minecraft, cell, visibleGhostFaces.get(index), pose,
-                            singleBuffer, tinted);
+                            singleBuffer, tinted, boundaryBuilders,
+                            localX, localY, localZ);
                 } catch (RuntimeException exception) {
                     ResourceLocation blockId = ForgeRegistries.BLOCKS.getKey(cell.state().getBlock());
                     if (blockId != null && WARNED_MODEL_TYPES.add(blockId)) {
@@ -697,7 +874,25 @@ final class BuilderPreviewSectionMeshCache {
                 }
                 pose.popPose();
             }
-            return upload(builder);
+            VertexBuffer ghost = upload(builder);
+            int uploadedBuffers = 0;
+            if (ghost != null) {
+                ghostBuffers.add(ghost);
+                uploadedBuffers++;
+            }
+            // Keep the main mesh and its directional fallback faces in one atomic 128-cell upload
+            // step.  A cap contains only boundary directional quads from that same bounded batch;
+            // it cannot grow with the rest of the blueprint or leave a drawable mesh uncapped.
+            for (Direction direction : Direction.values()) {
+                BufferBuilder boundaryBuilder = boundaryBuilders[direction.ordinal()];
+                if (boundaryBuilder == null) continue;
+                VertexBuffer boundary = upload(boundaryBuilder);
+                if (boundary != null) {
+                    boundaryGhostBuffers.get(direction.ordinal()).add(boundary);
+                    uploadedBuffers++;
+                }
+            }
+            return uploadedBuffers;
         }
 
         /**
@@ -712,7 +907,9 @@ final class BuilderPreviewSectionMeshCache {
                                              int visibleFaceMask,
                                              PoseStack pose,
                                              MultiBufferSource singleBuffer,
-                                             VertexConsumer tinted) {
+                                             VertexConsumer tinted,
+                                             BufferBuilder[] boundaryBuilders,
+                                             int localX, int localY, int localZ) {
             if (cell.state().getRenderShape() != RenderShape.MODEL) {
                 minecraft.getBlockRenderer().renderSingleBlock(cell.state(), pose, singleBuffer,
                         LightTexture.FULL_BRIGHT, OverlayTexture.NO_OVERLAY, ModelData.EMPTY,
@@ -729,17 +926,37 @@ final class BuilderPreviewSectionMeshCache {
             for (RenderType renderType : model.getRenderTypes(
                     cell.state(), renderTypeRandom, ModelData.EMPTY)) {
                 for (Direction direction : Direction.values()) {
-                    if (!isFaceVisible(visibleFaceMask, direction)) continue;
                     RandomSource quadRandom = RandomSource.create(42L);
-                    renderQuadList(pose.last(), tinted,
-                            model.getQuads(cell.state(), direction, quadRandom,
-                                    ModelData.EMPTY, renderType), red, green, blue);
+                    List<BakedQuad> quads = model.getQuads(cell.state(), direction, quadRandom,
+                            ModelData.EMPTY, renderType);
+                    if (isFaceVisible(visibleFaceMask, direction)) {
+                        renderQuadList(pose.last(), tinted, quads, red, green, blue);
+                    } else if (onBoundary(localX, localY, localZ, direction)) {
+                        BufferBuilder boundaryBuilder = boundaryBuilder(
+                                boundaryBuilders, direction);
+                        VertexConsumer boundaryTinted = new GhostVertexConsumer(
+                                boundaryBuilder, cell.kind());
+                        renderQuadList(pose.last(), boundaryTinted,
+                                quads, red, green, blue);
+                    }
                 }
                 RandomSource unculledRandom = RandomSource.create(42L);
                 renderQuadList(pose.last(), tinted,
                         model.getQuads(cell.state(), null, unculledRandom,
                                 ModelData.EMPTY, renderType), red, green, blue);
             }
+        }
+
+        private static BufferBuilder boundaryBuilder(BufferBuilder[] builders,
+                                                       Direction direction) {
+            int index = direction.ordinal();
+            BufferBuilder builder = builders[index];
+            if (builder == null) {
+                builder = new BufferBuilder(4096);
+                builder.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.NEW_ENTITY);
+                builders[index] = builder;
+            }
+            return builder;
         }
 
         private static void renderQuadList(PoseStack.Pose pose, VertexConsumer consumer,
@@ -769,13 +986,47 @@ final class BuilderPreviewSectionMeshCache {
 
         AABB bounds() { return bounds; }
         @Nullable VertexBuffer outlineBuffer() { return outlineBuffer; }
-        List<VertexBuffer> ghostBuffers() { return ghostBuffers; }
+        List<VertexBuffer> ghostBuffers(Set<SectionKey> drawableSections) {
+            boolean drawable = drawableSections.contains(key);
+            if (!shouldRenderGhostModels(drawable, ghostModelsComplete())) return List.of();
+            int capMask = 0;
+            for (Direction direction : Direction.values()) {
+                List<VertexBuffer> boundary = boundaryGhostBuffers.get(direction.ordinal());
+                if (boundary.isEmpty() || !shouldRenderBoundaryCap(
+                        drawable, drawableSections.contains(key.relative(direction)))) continue;
+                capMask |= 1 << direction.ordinal();
+            }
+            if (capMask == 0) return ghostBuffers;
+            List<VertexBuffer> result = ghostDrawLists.get(capMask);
+            if (result != null) return result;
+            List<VertexBuffer> created = new ArrayList<>(ghostBuffers);
+            for (Direction direction : Direction.values()) {
+                if ((capMask & 1 << direction.ordinal()) != 0) {
+                    created.addAll(boundaryGhostBuffers.get(direction.ordinal()));
+                }
+            }
+            result = List.copyOf(created);
+            ghostDrawLists.set(capMask, result);
+            return result;
+        }
         List<VertexBuffer> waveBuffers() { return waveBuffers; }
         int originX() { return originX; }
         int originY() { return originY; }
         int originZ() { return originZ; }
         BoundarySignature boundary(Direction direction) {
             return boundaries[direction.ordinal()];
+        }
+
+        private boolean projectionBoundaryConnects(SectionMesh neighbour,
+                                                    Direction direction) {
+            if (!key.relative(direction).equals(neighbour.key)) return false;
+            long[] first = projectedBoundaryMasks[direction.ordinal()];
+            long[] second = neighbour.projectedBoundaryMasks[
+                    direction.getOpposite().ordinal()];
+            for (int index = 0; index < first.length; index++) {
+                if ((first[index] & second[index]) != 0L) return true;
+            }
+            return false;
         }
 
         double closestDistanceToSqr(Vec3 point) {
@@ -795,9 +1046,13 @@ final class BuilderPreviewSectionMeshCache {
         private void close() {
             close(outlineBuffer);
             ghostBuffers.forEach(SectionMesh::close);
+            boundaryGhostBuffers.forEach(
+                    buffers -> buffers.forEach(SectionMesh::close));
             waveBuffers.forEach(SectionMesh::close);
             outlineBuffer = null;
             ghostBuffers.clear();
+            boundaryGhostBuffers.forEach(List::clear);
+            Collections.fill(ghostDrawLists, null);
             waveBuffers.clear();
         }
 
@@ -882,6 +1137,25 @@ final class BuilderPreviewSectionMeshCache {
 
     record SectionBoundary(SectionKey first, SectionKey second) { }
 
+    record ModelResidency(Set<SectionKey> keys, Set<SectionMesh> meshes) {
+        ModelResidency {
+            keys = Set.copyOf(keys);
+            meshes = Collections.unmodifiableSet(meshes);
+        }
+
+        boolean contains(SectionMesh section) {
+            return meshes.contains(section);
+        }
+
+        Set<SectionKey> drawableGhostSections() {
+            Set<SectionKey> drawable = new LinkedHashSet<>();
+            for (SectionMesh section : meshes) {
+                if (section.ghostModelsComplete()) drawable.add(section.key);
+            }
+            return Set.copyOf(drawable);
+        }
+    }
+
     private record BoundarySignature(long[] entries) {
         private static final BoundarySignature EMPTY = new BoundarySignature(new long[0]);
 
@@ -929,6 +1203,22 @@ final class BuilderPreviewSectionMeshCache {
     static boolean requireGhostCompletion(boolean withinModelDistance,
                                           boolean ghostUploadStarted) {
         return withinModelDistance || ghostUploadStarted;
+    }
+
+    /** Partial or out-of-residency concrete buffers are never exposed to the renderer. */
+    static boolean shouldRenderGhostModels(boolean resident, boolean uploadComplete) {
+        return resident && uploadComplete;
+    }
+
+    /** A culled cross-section face is restored until its projected neighbour is drawable. */
+    static boolean shouldRenderBoundaryCap(boolean sectionDrawable,
+                                           boolean neighbourDrawable) {
+        return sectionDrawable && !neighbourDrawable;
+    }
+
+    /** Empty batches still consume one scheduling step; cap VBOs consume their real upload cost. */
+    static int uploadBudgetCost(int uploadedVertexBuffers) {
+        return Math.max(1, uploadedVertexBuffers);
     }
 
     private static int divideRoundUp(int value, int divisor) {
@@ -1010,6 +1300,33 @@ final class BuilderPreviewSectionMeshCache {
             }
         }
         return result;
+    }
+
+    /** Four longs encode the 16x16 occupied ghost cells on each of the six section faces. */
+    private static long[][] createProjectedBoundaryMasks(
+            List<BuilderPreviewState.Cell> cells, boolean includeBuildGhosts,
+            int originX, int originY, int originZ) {
+        long[][] result = new long[Direction.values().length][4];
+        for (BuilderPreviewState.Cell cell : cells) {
+            if (!isGhostCell(cell, includeBuildGhosts)) continue;
+            int x = cell.pos().getX() - originX;
+            int y = cell.pos().getY() - originY;
+            int z = cell.pos().getZ() - originZ;
+            for (Direction direction : Direction.values()) {
+                if (!onBoundary(x, y, z, direction)) continue;
+                int bit = boundaryCellIndex(x, y, z, direction);
+                result[direction.ordinal()][bit >>> 6] |= 1L << (bit & 63);
+            }
+        }
+        return result;
+    }
+
+    private static int boundaryCellIndex(int x, int y, int z, Direction direction) {
+        return switch (direction.getAxis()) {
+            case X -> y << SECTION_SHIFT | z;
+            case Y -> x << SECTION_SHIFT | z;
+            case Z -> x << SECTION_SHIFT | y;
+        };
     }
 
     private static LongArrayList boundaryEntries(LongArrayList[] entries,

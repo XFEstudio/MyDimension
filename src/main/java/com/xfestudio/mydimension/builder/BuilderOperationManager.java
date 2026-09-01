@@ -13,15 +13,12 @@ import net.minecraft.sounds.SoundSource;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.BlockItem;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.item.context.UseOnContext;
 import net.minecraft.world.level.block.Block;
-import net.minecraft.world.level.block.BeehiveBlock;
 import net.minecraft.world.level.block.CandleBlock;
-import net.minecraft.world.level.block.ComposterBlock;
-import net.minecraft.world.level.block.LayeredCauldronBlock;
-import net.minecraft.world.level.block.RespawnAnchorBlock;
 import net.minecraft.world.level.block.SeaPickleBlock;
 import net.minecraft.world.level.block.SlabBlock;
 import net.minecraft.world.level.block.SnowLayerBlock;
@@ -309,23 +306,24 @@ public final class BuilderOperationManager {
         List<SupplyPool> pools = new ArrayList<>();
         if (!free) {
             for (BuildAttempt attempt : attempts) {
-                SupplyPool pool = findPool(pools, attempt.cost);
+                List<Item> fallbacks = BuilderBlockCompatibility.constructionFallbacks(attempt.desired);
+                SupplyPool pool = findPool(pools, attempt.cost, fallbacks);
                 if (pool == null) {
-                    pool = new SupplyPool(attempt.cost.copyWithCount(1));
+                    pool = new SupplyPool(attempt.cost.copyWithCount(1), fallbacks);
                     pools.add(pool);
                 }
                 pool.requested += attempt.cost.getCount();
             }
+            // Reserve every target's exact item before requesting any substitution. Thus ordinary dirt
+            // targets keep first claim on dirt, while grass targets consume grass blocks whenever present.
             for (SupplyPool pool : pools) {
-                try {
-                    BuilderMaterials.Extraction extraction = BuilderMaterials.extract(player, scepter,
-                            pool.template, pool.requested);
-                    pool.available = extraction.count();
-                    pool.extracted = pool.available;
-                } catch (Throwable throwable) {
-                    pool.available = 0;
-                    MyDimension.LOGGER.warn("Builder material extraction failed; this item is left pending",
-                            throwable);
+                extractSupply(player, scepter, pool, pool.template, pool.requested);
+            }
+            for (SupplyPool pool : pools) {
+                for (Item fallback : pool.fallbacks) {
+                    int missing = pool.requested - pool.available();
+                    if (missing <= 0) break;
+                    extractSupply(player, scepter, pool, new ItemStack(fallback), missing);
                 }
             }
         }
@@ -336,7 +334,7 @@ public final class BuilderOperationManager {
         stabilizeBuildBatch(level, result.successfulBuildPositions);
         if (captureHistory && !captureStableBuildHistory(level, batchBeforeImages, result)) {
             restoreSnapshots(level, batchBeforeImages);
-            for (SupplyPool pool : pools) pool.available = pool.extracted;
+            for (SupplyPool pool : pools) pool.resetAvailable();
             result.changed.clear();
             result.missing.clear();
             result.successfulBuildPositions.clear();
@@ -344,14 +342,26 @@ public final class BuilderOperationManager {
             result.blocked += result.changedCount;
             result.changedCount = 0;
         }
+        List<ItemStack> unusedSupplies = new ArrayList<>();
         for (SupplyPool pool : pools) {
-            if (pool.available > 0) {
-                dropOverflow(player, transactionId, BuilderMaterials.insert(player, scepter,
-                        List.of(pool.template.copyWithCount(pool.available))));
-            }
+            unusedSupplies.addAll(pool.unusedStacks());
+        }
+        if (!unusedSupplies.isEmpty()) {
+            dropOverflow(player, transactionId, BuilderMaterials.insert(player, scepter, unusedSupplies));
         }
         result.offhandAfter = player.getOffhandItem().copy();
         return result;
+    }
+
+    private static void extractSupply(ServerPlayer player, ItemStack scepter, SupplyPool pool,
+                                      ItemStack requested, int amount) {
+        if (amount <= 0 || requested.isEmpty()) return;
+        try {
+            BuilderMaterials.Extraction extraction = BuilderMaterials.extract(player, scepter, requested, amount);
+            pool.addReserve(requested, extraction.count());
+        } catch (Throwable throwable) {
+            MyDimension.LOGGER.warn("Builder material extraction failed; this item is left pending", throwable);
+        }
     }
 
     private static ItemStack placementStack(ItemStack offhand, BlockState desired, ItemStack cost) {
@@ -525,7 +535,8 @@ public final class BuilderOperationManager {
         ServerLevel level = player.serverLevel();
         BlockPos pos = attempt.candidate.target();
         BlockState desired = attempt.desired;
-        SupplyPool pool = free ? null : findPool(pools, attempt.cost);
+        SupplyPool pool = free ? null : findPool(pools, attempt.cost,
+                BuilderBlockCompatibility.constructionFallbacks(desired));
         int costCount = attempt.cost.getCount();
         try {
             BlockState existing = level.getBlockState(pos);
@@ -545,7 +556,7 @@ public final class BuilderOperationManager {
             result.blocked++;
             return true;
         }
-        if (pool != null && pool.available < costCount) {
+        if (pool != null && pool.available() < costCount) {
             result.missing.add(new PendingBuildData.Entry(pos, desired, attempt.blockEntityTag));
             return true;
         }
@@ -572,8 +583,8 @@ public final class BuilderOperationManager {
                     placed = false;
                 }
             }
-            if (placed && attempt.placementStack.getItem() instanceof BlockItem blockItem
-                    && blockItem.getBlock() == desired.getBlock()) {
+            if (placed && !attempt.placementStack.isEmpty()
+                    && attempt.placementStack.is(desired.getBlock().asItem())) {
                 BlockState placedState = level.getBlockState(pos);
                 placedState.getBlock().setPlacedBy(level, pos, placedState, player,
                         attempt.placementStack.copy());
@@ -601,9 +612,9 @@ public final class BuilderOperationManager {
             return true;
         }
         if (pool != null) {
-            pool.available -= costCount;
+            List<ItemStack> consumed = pool.consume(costCount);
             if (result.captureHistory) {
-                addLedgerStack(result.debits, pool.template.copyWithCount(costCount));
+                consumed.forEach(stack -> addLedgerStack(result.debits, stack));
             }
         }
         BlockState successfulState = level.getBlockState(pos);
@@ -944,22 +955,13 @@ public final class BuilderOperationManager {
     }
 
     /**
-     * Returns the exact item debit for one state, or an empty stack when a state cannot be reproduced
-     * without inventing hidden fluid/content. This closes imported-blueprint shortcuts such as one item
-     * becoming a double slab, eight snow layers, a full composter or a charged respawn anchor.
+     * Returns the base block-item debit for a state. State properties are part of the blueprint payload,
+     * not separate materials: for example, every water-cauldron level maps through vanilla's block/item
+     * alias to one cauldron item, and a waterlogged slab still maps to its slab item. Component-count
+     * properties remain additive because those states physically represent more than one placed item.
      */
-    private static ItemStack constructionCost(BlockState state) {
-        if (!state.getFluidState().isEmpty()) return ItemStack.EMPTY;
+    static ItemStack constructionCost(BlockState state) {
         Block block = state.getBlock();
-        if (block instanceof ComposterBlock && state.getValue(ComposterBlock.LEVEL) > 0) return ItemStack.EMPTY;
-        if (block instanceof BeehiveBlock && state.getValue(BeehiveBlock.HONEY_LEVEL) > 0) return ItemStack.EMPTY;
-        if (block instanceof RespawnAnchorBlock && state.getValue(RespawnAnchorBlock.CHARGE) > 0) {
-            return ItemStack.EMPTY;
-        }
-        if (block instanceof LayeredCauldronBlock && state.getValue(LayeredCauldronBlock.LEVEL) > 0) {
-            return ItemStack.EMPTY;
-        }
-
         ItemStack cost = new ItemStack(block.asItem());
         if (cost.isEmpty()) return ItemStack.EMPTY;
         int count = 1;
@@ -1373,18 +1375,72 @@ public final class BuilderOperationManager {
 
     private static final class SupplyPool {
         private final ItemStack template;
+        private final List<Item> fallbacks;
+        private final List<SupplyReserve> reserves = new ArrayList<>();
         private int requested;
-        private int available;
-        private int extracted;
 
-        private SupplyPool(ItemStack template) {
+        private SupplyPool(ItemStack template, List<Item> fallbacks) {
             this.template = template;
+            this.fallbacks = List.copyOf(fallbacks);
+        }
+
+        private void addReserve(ItemStack material, int count) {
+            if (count <= 0 || material.isEmpty()) return;
+            for (SupplyReserve reserve : reserves) {
+                if (!ItemStack.isSameItemSameTags(reserve.template, material)) continue;
+                reserve.available += count;
+                reserve.extracted += count;
+                return;
+            }
+            reserves.add(new SupplyReserve(material.copyWithCount(1), count));
+        }
+
+        private int available() {
+            return reserves.stream().mapToInt(reserve -> reserve.available).sum();
+        }
+
+        /** Exact material is stored first, followed by fallbacks in policy order. */
+        private List<ItemStack> consume(int count) {
+            if (count <= 0 || available() < count) return List.of();
+            int remaining = count;
+            List<ItemStack> consumed = new ArrayList<>();
+            for (SupplyReserve reserve : reserves) {
+                if (remaining <= 0) break;
+                int taken = Math.min(remaining, reserve.available);
+                if (taken <= 0) continue;
+                reserve.available -= taken;
+                consumed.add(reserve.template.copyWithCount(taken));
+                remaining -= taken;
+            }
+            return List.copyOf(consumed);
+        }
+
+        private void resetAvailable() {
+            reserves.forEach(reserve -> reserve.available = reserve.extracted);
+        }
+
+        private List<ItemStack> unusedStacks() {
+            return reserves.stream().filter(reserve -> reserve.available > 0)
+                    .map(reserve -> reserve.template.copyWithCount(reserve.available)).toList();
         }
     }
 
-    private static SupplyPool findPool(List<SupplyPool> pools, ItemStack stack) {
+    private static final class SupplyReserve {
+        private final ItemStack template;
+        private int available;
+        private int extracted;
+
+        private SupplyReserve(ItemStack template, int extracted) {
+            this.template = template;
+            this.available = extracted;
+            this.extracted = extracted;
+        }
+    }
+
+    private static SupplyPool findPool(List<SupplyPool> pools, ItemStack stack, List<Item> fallbacks) {
         for (SupplyPool pool : pools) {
-            if (ItemStack.isSameItemSameTags(pool.template, stack)) return pool;
+            if (ItemStack.isSameItemSameTags(pool.template, stack)
+                    && pool.fallbacks.equals(fallbacks)) return pool;
         }
         return null;
     }

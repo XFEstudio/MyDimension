@@ -1,6 +1,7 @@
 package com.xfestudio.mydimension.client.builder;
 
 import com.xfestudio.mydimension.builder.BuilderMode;
+import com.xfestudio.mydimension.builder.BuilderBlockCompatibility;
 import com.xfestudio.mydimension.builder.BuilderTags;
 import com.xfestudio.mydimension.builder.SurfacePlaneTraversal;
 import com.xfestudio.mydimension.builder.SurfaceMatchMode;
@@ -101,7 +102,7 @@ public final class BuilderSurfacePreviewPlanner {
                     BlockState state = level.getBlockState(pos);
                     return SurfacePlaneTraversal.isReference(state)
                             && (settings.surfaceMatch() != SurfaceMatchMode.SAME_BLOCK
-                            || state.getBlock() == seed.getBlock())
+                            || BuilderBlockCompatibility.sameSurfaceType(seed, state))
                             && SurfacePlaneTraversal.hasExposedReferenceFace(
                             level, pos, hit.getDirection(), state);
                 }, ignored -> true);
@@ -163,7 +164,7 @@ public final class BuilderSurfacePreviewPlanner {
                 if (!source.equals(cell.state())) return true;
             } else if (!SurfacePlaneTraversal.isReference(source)
                     || key.match() == SurfaceMatchMode.SAME_BLOCK
-                    && source.getBlock() != key.seedState().getBlock()) {
+                    && !BuilderBlockCompatibility.sameSurfaceType(key.seedState(), source)) {
                 return true;
             }
         }
