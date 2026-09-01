@@ -1,0 +1,27 @@
+{
+  "variants": {
+    "facing=down": {
+      "model": "mydimension:block/resonant_supply_anchor",
+      "x": 90
+    },
+    "facing=east": {
+      "model": "mydimension:block/resonant_supply_anchor",
+      "y": 90
+    },
+    "facing=north": {
+      "model": "mydimension:block/resonant_supply_anchor"
+    },
+    "facing=south": {
+      "model": "mydimension:block/resonant_supply_anchor",
+      "y": 180
+    },
+    "facing=up": {
+      "model": "mydimension:block/resonant_supply_anchor",
+      "x": 270
+    },
+    "facing=west": {
+      "model": "mydimension:block/resonant_supply_anchor",
+      "y": 270
+    }
+  }
+}

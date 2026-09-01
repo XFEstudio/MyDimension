@@ -6,6 +6,7 @@ import com.xfestudio.mydimension.item.RiftAction;
 import com.xfestudio.mydimension.item.RiftItem;
 import com.xfestudio.mydimension.registry.ModEntities;
 import com.xfestudio.mydimension.registry.ModItems;
+import com.xfestudio.mydimension.network.ModNetwork;
 import com.xfestudio.mydimension.world.ModDimensions;
 import com.xfestudio.mydimension.world.entity.RiftAnchorEntity;
 import net.minecraft.commands.CommandSourceStack;
@@ -43,6 +44,13 @@ import java.util.Locale;
 public class MyDimensionEvents {
     private static final int CLEAR_WEATHER_DURATION = 6000;
     private int anchorParticleTicker;
+
+    @SubscribeEvent
+    public void syncBuilderAvailability(PlayerEvent.PlayerLoggedInEvent event) {
+        if (event.getEntity() instanceof ServerPlayer player) {
+            ModNetwork.sendBuilderAvailability(player);
+        }
+    }
 
     @SubscribeEvent(priority = EventPriority.HIGHEST, receiveCanceled = true)
     public void sendMobToEtherealMind(PlayerInteractEvent.EntityInteract event) {
