@@ -25,6 +25,7 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.LayeredCauldronBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+import net.minecraft.world.level.block.piston.PistonMovingBlockEntity;
 import net.minecraft.world.level.material.Fluids;
 import net.minecraft.world.phys.AABB;
 import net.minecraftforge.common.MinecraftForge;
@@ -365,6 +366,32 @@ public final class BuilderGameTests {
         helper.getLevel().setBlock(position, Blocks.DIAMOND_BLOCK.defaultBlockState(), Block.UPDATE_ALL);
         helper.assertTrue(!transaction.matchesAppliedAfter(helper.getLevel()),
                 "External edits must not be absorbed into a resumed transaction");
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
+    public static void historyStabilizationDoesNotAdvanceUnknownBlockEntities(GameTestHelper helper) {
+        BlockPos settling = helper.absolutePos(new BlockPos(1, 2, 1));
+        helper.getLevel().setBlock(settling, Blocks.AIR.defaultBlockState(), Block.UPDATE_ALL);
+
+        BlockState moving = Blocks.MOVING_PISTON.defaultBlockState()
+                .setValue(BlockStateProperties.FACING, Direction.EAST);
+        helper.getLevel().setBlock(settling, moving, Block.UPDATE_ALL);
+        PistonMovingBlockEntity delayed = new PistonMovingBlockEntity(settling, moving,
+                Blocks.STONE.defaultBlockState(), Direction.EAST, true, false);
+        helper.getLevel().setBlockEntity(delayed);
+        // Leave the moving block one invocation short of completion. A blanket "first tick" pass
+        // would complete it, proving that stabilization had advanced an unrelated block entity.
+        PistonMovingBlockEntity.tick(helper.getLevel(), settling, moving, delayed);
+        PistonMovingBlockEntity.tick(helper.getLevel(), settling, moving, delayed);
+        helper.assertTrue(helper.getLevel().getBlockState(settling).is(Blocks.MOVING_PISTON),
+                "Test fixture settled before the builder initialization pass");
+
+        BuilderOperationManager.stabilizeBuildBatch(helper.getLevel(), List.of(settling), true);
+        helper.assertTrue(helper.getLevel().getBlockState(settling).is(Blocks.MOVING_PISTON),
+                "History stabilization advanced an unknown block entity ticker");
+        helper.assertTrue(helper.getLevel().getBlockEntity(settling) instanceof PistonMovingBlockEntity,
+                "History stabilization removed an unknown block entity");
         helper.succeed();
     }
 

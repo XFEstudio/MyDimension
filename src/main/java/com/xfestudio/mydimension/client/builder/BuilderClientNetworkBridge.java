@@ -102,7 +102,8 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
             ModNetwork.CHANNEL.sendToServer(BuilderCommandPacket.setHistoryRecording(value.enabled()));
         } else if (command instanceof BuilderClientCommand.UseTarget value) {
             switch (value.kind()) {
-                case AUTO -> ModNetwork.CHANNEL.sendToServer(BuilderCommandPacket.use(target(value.target())));
+                case AUTO -> ModNetwork.CHANNEL.sendToServer(BuilderCommandPacket.use(
+                        target(value.target()), value.interactionOverride()));
                 case RESUME_MISSING -> ModNetwork.CHANNEL.sendToServer(
                         BuilderCommandPacket.resume(value.activeJobId()));
                 case PLACE_BLUEPRINT -> placeBlueprint(value.target());

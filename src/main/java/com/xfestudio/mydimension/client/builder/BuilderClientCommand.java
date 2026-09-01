@@ -42,7 +42,11 @@ public sealed interface BuilderClientCommand {
     record SelectBlueprintPoint(Target target) implements BuilderClientCommand {
     }
 
-    record UseTarget(Target target, UseKind kind, UUID activeJobId) implements BuilderClientCommand {
+    record UseTarget(Target target, UseKind kind, UUID activeJobId,
+                     boolean interactionOverride) implements BuilderClientCommand {
+        public UseTarget(Target target, UseKind kind, UUID activeJobId) {
+            this(target, kind, activeJobId, false);
+        }
     }
 
     record CancelActive(UUID activeJobId) implements BuilderClientCommand {

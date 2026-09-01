@@ -2,10 +2,12 @@ package com.xfestudio.mydimension.client.builder;
 
 import com.xfestudio.mydimension.builder.BuilderMode;
 import com.xfestudio.mydimension.builder.BuilderBlockCompatibility;
+import com.xfestudio.mydimension.builder.BuilderInteractionPolicy;
 import com.xfestudio.mydimension.builder.BuilderTags;
 import com.xfestudio.mydimension.builder.SurfacePlaneTraversal;
 import com.xfestudio.mydimension.builder.SurfaceMatchMode;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -49,10 +51,18 @@ public final class BuilderSurfacePreviewPlanner {
             return;
         }
         targetMissTicks = 0;
+        BlockState targetState = minecraft.level.getBlockState(hit.getBlockPos());
+        if (!BuilderInteractionPolicy.permitsScepter(Screen.hasShiftDown(), targetState)) {
+            // Interaction-priority targets hide a previous surface preview immediately. The
+            // ordinary right-click path is then free to reach the block itself.
+            if (workflow != null) BuilderPreviewState.get().clear();
+            reset();
+            return;
+        }
         BlockState override = minecraft.player.getOffhandItem().getItem() instanceof BlockItem blockItem
                 ? blockItem.getBlock().defaultBlockState() : null;
         PreviewKey key = new PreviewKey(minecraft.level, hit.getBlockPos().immutable(), hit.getDirection(),
-                minecraft.level.getBlockState(hit.getBlockPos()), settings.mode(), settings.surfaceMatch(),
+                targetState, settings.mode(), settings.surfaceMatch(),
                 settings.buildLimit(), settings.demolishLimit(), override,
                 minecraft.level.getBlockState(hit.getBlockPos().relative(hit.getDirection())));
         boolean snapshotReplaced = showingSurfacePreview && workflow != lastPlannedSnapshot;

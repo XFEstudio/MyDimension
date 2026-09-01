@@ -27,6 +27,7 @@ import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.EntityBlock;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
@@ -728,6 +729,7 @@ final class BuilderPreviewSectionMeshCache {
 
         @Nullable private VertexBuffer outlineBuffer;
         private final List<VertexBuffer> ghostBuffers = new ArrayList<>();
+        private final List<SpecialGhostBuffer> specialGhostBuffers = new ArrayList<>();
         private final List<List<VertexBuffer>> boundaryGhostBuffers = new ArrayList<>(
                 Direction.values().length);
         private final List<List<VertexBuffer>> ghostDrawLists = new ArrayList<>(
@@ -846,6 +848,7 @@ final class BuilderPreviewSectionMeshCache {
             BufferBuilder builder = new BufferBuilder(Math.max(4096, (end - start) * 1024));
             builder.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.NEW_ENTITY);
             BufferBuilder[] boundaryBuilders = new BufferBuilder[Direction.values().length];
+            Map<RenderType, BufferBuilder> specialBuilders = new LinkedHashMap<>();
             PoseStack pose = new PoseStack();
             for (int index = start; index < end; index++) {
                 BuilderPreviewState.Cell cell = cells.get(index);
@@ -860,12 +863,22 @@ final class BuilderPreviewSectionMeshCache {
                 float modelScale = 1.0F - GHOST_MODEL_INSET * 2.0F;
                 pose.scale(modelScale, modelScale, modelScale);
                 VertexConsumer tinted = new GhostVertexConsumer(builder, cell.kind());
-                MultiBufferSource singleBuffer = ignored -> tinted;
+                boolean special = requiresBlockEntityGhost(cell.state().getRenderShape());
                 try {
-                    renderGhostBlock(minecraft, cell, visibleGhostFaces.get(index), pose,
-                            singleBuffer, tinted, boundaryBuilders,
-                            localX, localY, localZ);
+                    if (special) {
+                        renderSpecialGhostBlock(minecraft, cell, pose, specialBuilders);
+                    } else if (cell.state().getRenderShape() == RenderShape.MODEL) {
+                        renderGhostBlock(minecraft, cell, visibleGhostFaces.get(index), pose,
+                                tinted, boundaryBuilders, localX, localY, localZ);
+                    }
                 } catch (RuntimeException exception) {
+                    if (special) {
+                        // A BER may throw after leaving a partial vertex in its consumer. Drop the
+                        // affected special batch instead of uploading malformed geometry; the
+                        // always-present outline still represents every skipped cell.
+                        specialBuilders.values().forEach(BufferBuilder::discard);
+                        specialBuilders.clear();
+                    }
                     ResourceLocation blockId = ForgeRegistries.BLOCKS.getKey(cell.state().getBlock());
                     if (blockId != null && WARNED_MODEL_TYPES.add(blockId)) {
                         MyDimension.LOGGER.warn("Skipping incompatible projected block model {}",
@@ -879,6 +892,13 @@ final class BuilderPreviewSectionMeshCache {
             if (ghost != null) {
                 ghostBuffers.add(ghost);
                 uploadedBuffers++;
+            }
+            for (Map.Entry<RenderType, BufferBuilder> entry : specialBuilders.entrySet()) {
+                VertexBuffer special = upload(entry.getValue());
+                if (special != null) {
+                    specialGhostBuffers.add(new SpecialGhostBuffer(entry.getKey(), special));
+                    uploadedBuffers++;
+                }
             }
             // Keep the main mesh and its directional fallback faces in one atomic 128-cell upload
             // step.  A cap contains only boundary directional quads from that same bounded batch;
@@ -906,17 +926,9 @@ final class BuilderPreviewSectionMeshCache {
                                              BuilderPreviewState.Cell cell,
                                              int visibleFaceMask,
                                              PoseStack pose,
-                                             MultiBufferSource singleBuffer,
                                              VertexConsumer tinted,
                                              BufferBuilder[] boundaryBuilders,
                                              int localX, int localY, int localZ) {
-            if (cell.state().getRenderShape() != RenderShape.MODEL) {
-                minecraft.getBlockRenderer().renderSingleBlock(cell.state(), pose, singleBuffer,
-                        LightTexture.FULL_BRIGHT, OverlayTexture.NO_OVERLAY, ModelData.EMPTY,
-                        BuilderPreviewRenderTypes.ghostModel());
-                return;
-            }
-
             BakedModel model = minecraft.getBlockRenderer().getBlockModel(cell.state());
             int tint = minecraft.getBlockColors().getColor(cell.state(), null, null, 0);
             float red = (tint >> 16 & 255) / 255.0F;
@@ -945,6 +957,32 @@ final class BuilderPreviewSectionMeshCache {
                         model.getQuads(cell.state(), null, unculledRandom,
                                 ModelData.EMPTY, renderType), red, green, blue);
             }
+        }
+
+        /**
+         * Captures an entity-animated block through its actual block-entity renderer. Chests, for
+         * example, request {@link net.minecraft.client.renderer.Sheets#CHEST_SHEET}; preserving
+         * that render type and atlas avoids sampling chest UVs from the ordinary block atlas.
+         * Blocks without a default BE or registered BER deliberately remain outline-only.
+         */
+        private static void renderSpecialGhostBlock(Minecraft minecraft,
+                                                    BuilderPreviewState.Cell cell,
+                                                    PoseStack pose,
+                                                    Map<RenderType, BufferBuilder> builders) {
+            if (!(cell.state().getBlock() instanceof EntityBlock entityBlock)) return;
+            BlockEntity blockEntity = entityBlock.newBlockEntity(cell.pos(), cell.state());
+            if (blockEntity == null) return;
+            MultiBufferSource source = renderType -> {
+                BufferBuilder special = builders.get(renderType);
+                if (special == null) {
+                    special = new BufferBuilder(4096);
+                    special.begin(renderType.mode(), renderType.format());
+                    builders.put(renderType, special);
+                }
+                return new GhostVertexConsumer(special, cell.kind());
+            };
+            minecraft.getBlockEntityRenderDispatcher().renderItem(blockEntity, pose, source,
+                    LightTexture.FULL_BRIGHT, OverlayTexture.NO_OVERLAY);
         }
 
         private static BufferBuilder boundaryBuilder(BufferBuilder[] builders,
@@ -1009,6 +1047,11 @@ final class BuilderPreviewSectionMeshCache {
             ghostDrawLists.set(capMask, result);
             return result;
         }
+        List<SpecialGhostBuffer> specialGhostBuffers(Set<SectionKey> drawableSections) {
+            boolean drawable = drawableSections.contains(key);
+            return shouldRenderGhostModels(drawable, ghostModelsComplete())
+                    ? specialGhostBuffers : List.of();
+        }
         List<VertexBuffer> waveBuffers() { return waveBuffers; }
         int originX() { return originX; }
         int originY() { return originY; }
@@ -1046,11 +1089,13 @@ final class BuilderPreviewSectionMeshCache {
         private void close() {
             close(outlineBuffer);
             ghostBuffers.forEach(SectionMesh::close);
+            specialGhostBuffers.forEach(buffer -> close(buffer.buffer()));
             boundaryGhostBuffers.forEach(
                     buffers -> buffers.forEach(SectionMesh::close));
             waveBuffers.forEach(SectionMesh::close);
             outlineBuffer = null;
             ghostBuffers.clear();
+            specialGhostBuffers.clear();
             boundaryGhostBuffers.forEach(List::clear);
             Collections.fill(ghostDrawLists, null);
             waveBuffers.clear();
@@ -1119,6 +1164,8 @@ final class BuilderPreviewSectionMeshCache {
 
     private record WaveCell(int x, int y, int z, int faceMask) { }
 
+    record SpecialGhostBuffer(RenderType renderType, VertexBuffer buffer) { }
+
     private record EdgeKey(int x, int y, int z, Axis axis,
                            BuilderPreviewState.Kind kind) { }
 
@@ -1182,6 +1229,11 @@ final class BuilderPreviewSectionMeshCache {
                 && permitsGhostKind(cell.kind(), blueprintPreview)
                 && !cell.state().isAir()
                 && cell.state().getRenderShape() != RenderShape.INVISIBLE;
+    }
+
+    /** Entity-animated states must retain the atlas selected by their BER. */
+    static boolean requiresBlockEntityGhost(RenderShape renderShape) {
+        return renderShape == RenderShape.ENTITYBLOCK_ANIMATED;
     }
 
     static boolean permitsGhostKind(BuilderPreviewState.Kind kind, boolean blueprintPreview) {
@@ -1548,7 +1600,7 @@ final class BuilderPreviewSectionMeshCache {
         }
     }
 
-    /** Applies stable projection tint and alpha while retaining the block atlas UVs. */
+    /** Applies stable projection tint and alpha while retaining the source renderer's atlas UVs. */
     private static final class GhostVertexConsumer implements VertexConsumer {
         private final VertexConsumer delegate;
         private final float red;

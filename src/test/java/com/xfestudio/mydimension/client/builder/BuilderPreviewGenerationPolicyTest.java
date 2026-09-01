@@ -1,6 +1,7 @@
 package com.xfestudio.mydimension.client.builder;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.block.RenderShape;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -15,6 +16,15 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class BuilderPreviewGenerationPolicyTest {
+    @Test
+    void entityAnimatedGhostsNeverUseTheOrdinaryBlockAtlasPath() {
+        assertTrue(BuilderPreviewSectionMeshCache.requiresBlockEntityGhost(
+                RenderShape.ENTITYBLOCK_ANIMATED));
+        assertFalse(BuilderPreviewSectionMeshCache.requiresBlockEntityGhost(RenderShape.MODEL));
+        assertFalse(BuilderPreviewSectionMeshCache.requiresBlockEntityGhost(
+                RenderShape.INVISIBLE));
+    }
+
     @Test
     void ordinaryOutlineSectionCanPromoteInOneFrame() {
         assertEquals(1, BuilderPreviewSectionMeshCache.maximumPromotionFrames(

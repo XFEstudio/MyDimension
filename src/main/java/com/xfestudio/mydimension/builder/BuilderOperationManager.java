@@ -6,7 +6,9 @@ import com.xfestudio.mydimension.builder.history.BuilderTransaction;
 import com.xfestudio.mydimension.builder.history.WorldDelta;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundSource;
@@ -19,11 +21,14 @@ import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.item.context.UseOnContext;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.CandleBlock;
+import net.minecraft.world.level.block.EntityBlock;
 import net.minecraft.world.level.block.SeaPickleBlock;
 import net.minecraft.world.level.block.SlabBlock;
 import net.minecraft.world.level.block.SnowLayerBlock;
 import net.minecraft.world.level.block.TurtleEggBlock;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.entity.BlockEntityTicker;
+import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.SlabType;
 import net.minecraft.world.level.border.WorldBorder;
@@ -48,6 +53,13 @@ public final class BuilderOperationManager {
     private static final long ORDINARY_HISTORY_ENTRY_BYTES = 4_096L;
     /** Used only when a mod advertises a BE but cannot create a prediction instance safely. */
     private static final long UNKNOWN_BLOCK_ENTITY_BYTES = 256L * 1_024L;
+    /**
+     * Structural block entities whose first ticker invocation is a bounded, non-processing
+     * initialization pass. Keep this deliberately explicit: ticking an arbitrary newly placed
+     * furnace or modded machine here could advance recipes, consume fuel, or emit side effects.
+     */
+    private static final ResourceLocation CREATE_ITEM_VAULT =
+            new ResourceLocation("create", "item_vault");
 
     private BuilderOperationManager() {
     }
@@ -331,7 +343,7 @@ public final class BuilderOperationManager {
         List<BuildAttempt> unresolved = processWithSingleRetry(attempts,
                 attempt -> placeBuildAttempt(player, pools, free, result, attempt));
         result.blocked += unresolved.size();
-        stabilizeBuildBatch(level, result.successfulBuildPositions);
+        stabilizeBuildBatch(level, result.successfulBuildPositions, captureHistory);
         if (captureHistory && !captureStableBuildHistory(level, batchBeforeImages, result)) {
             restoreSnapshots(level, batchBeforeImages);
             for (SupplyPool pool : pools) pool.resetAvailable();
@@ -415,7 +427,8 @@ public final class BuilderOperationManager {
      * intentionally after all placements so multiblocks such as Create vaults see their complete
      * neighbourhood, while the ordinary per-block protection event remains authoritative.
      */
-    private static void stabilizeBuildBatch(ServerLevel level, Iterable<BlockPos> successfulTargets) {
+    static void stabilizeBuildBatch(ServerLevel level, Iterable<BlockPos> successfulTargets,
+                                    boolean initializeFreshBlockEntities) {
         java.util.LinkedHashSet<BlockPos> targetSet = new java.util.LinkedHashSet<>();
         successfulTargets.forEach(pos -> targetSet.add(pos.immutable()));
         List<BlockPos> targets = List.copyOf(targetSet);
@@ -459,6 +472,10 @@ public final class BuilderOperationManager {
             }
         }
 
+        if (initializeFreshBlockEntities) {
+            initializeDeferredStructuralBlockEntities(level, targets);
+        }
+
         for (BlockPos pos : affected) {
             BlockState beforeState = beforeStates.get(pos);
             if (beforeState == null || !validLoadedPosition(level, pos)) continue;
@@ -481,6 +498,53 @@ public final class BuilderOperationManager {
                 MyDimension.LOGGER.warn("Builder stabilization sync failed at {}", pos, throwable);
             }
         }
+    }
+
+    /**
+     * Runs the first server ticker invocation for explicitly vetted structural block entities
+     * created by this batch before its transactional after-image is captured. Create item vaults
+     * defer both connectivity and their serialized last-known position until this invocation.
+     * Capturing the pre-initialization image would make an otherwise untouched material-waiting
+     * task look externally modified on resume.
+     *
+     * <p>This is limited to successful targets, history-enabled construction, and a small explicit
+     * allowlist of non-processing structural types. Ordinary and unknown machine block entities are
+     * never advanced, and exact after-image validation remains in force once this bounded
+     * initialization pass has completed.</p>
+     */
+    private static void initializeDeferredStructuralBlockEntities(ServerLevel level,
+                                                                   Iterable<BlockPos> targets) {
+        for (BlockPos pos : targets) {
+            if (!validLoadedPosition(level, pos)) continue;
+            try {
+                BlockState state = level.getBlockState(pos);
+                BlockEntity blockEntity = level.getBlockEntity(pos);
+                if (blockEntity == null || blockEntity.isRemoved()
+                        || !(state.getBlock() instanceof EntityBlock entityBlock)) continue;
+                ResourceLocation typeId = BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(blockEntity.getType());
+                if (!requiresDeferredStructuralFirstTick(typeId)) continue;
+                runBlockEntityTicker(entityBlock, level, pos, state, blockEntity);
+            } catch (Throwable throwable) {
+                // A compatibility initializer must not invalidate already successful placements. If
+                // it cannot initialize here, the exact continuation check still fails closed if the
+                // ordinary world tick later mutates the recorded image.
+                MyDimension.LOGGER.warn("Builder structural first-tick stabilization failed at {}",
+                        pos, throwable);
+            }
+        }
+    }
+
+    static boolean requiresDeferredStructuralFirstTick(ResourceLocation blockEntityTypeId) {
+        return CREATE_ITEM_VAULT.equals(blockEntityTypeId);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends BlockEntity> void runBlockEntityTicker(EntityBlock block, ServerLevel level,
+                                                                      BlockPos pos, BlockState state,
+                                                                      BlockEntity blockEntity) {
+        BlockEntityType<T> type = (BlockEntityType<T>) blockEntity.getType();
+        BlockEntityTicker<T> ticker = block.getTicker(level, state, type);
+        if (ticker != null) ticker.tick(level, pos, state, (T) blockEntity);
     }
 
     static boolean requiresBlockEntityComparison(boolean successfulTarget) {

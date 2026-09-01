@@ -2,6 +2,7 @@ package com.xfestudio.mydimension.builder.anchor;
 
 import com.xfestudio.mydimension.builder.ResonantAnchorTarget;
 import com.xfestudio.mydimension.config.BuilderConfig;
+import com.xfestudio.mydimension.network.ModNetwork;
 import com.xfestudio.mydimension.registry.ModBlockEntities;
 import com.xfestudio.mydimension.registry.ModBlocks;
 import net.minecraft.core.BlockPos;
@@ -153,10 +154,18 @@ public final class ResonantSupplyAnchorBlockEntity extends BlockEntity implement
             return;
         }
         UUID indexed = registeredId == null ? anchorId : registeredId;
-        AnchorIndexSavedData.get(serverLevel.getServer()).unregister(indexed,
-                registeredLocation == null ? location() : registeredLocation);
+        AnchorIndexSavedData index = AnchorIndexSavedData.get(serverLevel.getServer());
+        index.unregister(indexed, registeredLocation == null ? location() : registeredLocation);
         registeredId = null;
         registeredLocation = null;
+
+        // The UUID intentionally remains on a dropped anchor item, but destroying the endpoint
+        // severs its scepter bindings. Replacing that item therefore requires an explicit rebind.
+        // Only invalidate if the index is now absent: a malformed duplicate must never cause this
+        // block's removal to unbind an authoritative endpoint registered at another location.
+        if (index.find(indexed).isEmpty()) {
+            ModNetwork.sendBuilderAnchorInvalidation(serverLevel.getServer(), indexed);
+        }
     }
 
     @Override

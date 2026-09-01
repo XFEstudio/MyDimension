@@ -1,6 +1,7 @@
 package com.xfestudio.mydimension.builder;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.resources.ResourceLocation;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -46,5 +47,15 @@ class BuilderBuildBatchPolicyTest {
     void successfulTargetsSkipRedundantBlockEntityTagComparison() {
         assertFalse(BuilderOperationManager.requiresBlockEntityComparison(true));
         assertTrue(BuilderOperationManager.requiresBlockEntityComparison(false));
+    }
+
+    @Test
+    void deferredFirstTickIsRestrictedToVettedStructuralBlockEntities() {
+        assertTrue(BuilderOperationManager.requiresDeferredStructuralFirstTick(
+                new ResourceLocation("create", "item_vault")));
+        assertFalse(BuilderOperationManager.requiresDeferredStructuralFirstTick(
+                new ResourceLocation("minecraft", "furnace")));
+        assertFalse(BuilderOperationManager.requiresDeferredStructuralFirstTick(
+                new ResourceLocation("minecraft", "moving_piston")));
     }
 }

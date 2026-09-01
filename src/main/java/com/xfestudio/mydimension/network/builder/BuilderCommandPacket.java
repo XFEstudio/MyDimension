@@ -1,6 +1,7 @@
 package com.xfestudio.mydimension.network.builder;
 
 import com.xfestudio.mydimension.builder.BuilderHistoryService;
+import com.xfestudio.mydimension.builder.BuilderInteractionPolicy;
 import com.xfestudio.mydimension.builder.BuilderMode;
 import com.xfestudio.mydimension.builder.BuilderNetworkBridge;
 import com.xfestudio.mydimension.builder.BuilderOperationManager;
@@ -85,7 +86,12 @@ public final class BuilderCommandPacket {
     }
 
     public static BuilderCommandPacket use(Target target) {
-        return new BuilderCommandPacket(Action.USE, null, null, 0, 0, null, target, null);
+        return use(target, false);
+    }
+
+    public static BuilderCommandPacket use(Target target, boolean interactionOverride) {
+        return new BuilderCommandPacket(Action.USE, null, null,
+                interactionOverride ? 1 : 0, 0, null, target, null);
     }
 
     public static BuilderCommandPacket resume(@Nullable UUID activeJobId) {
@@ -141,7 +147,10 @@ public final class BuilderCommandPacket {
                 buffer.writeVarInt(packet.second);
             }
             case SET_HISTORY_RECORDING -> buffer.writeBoolean(packet.first != 0);
-            case USE -> packet.target.write(buffer);
+            case USE -> {
+                packet.target.write(buffer);
+                buffer.writeBoolean(packet.first != 0);
+            }
             case RESUME, CANCEL -> writeOptionalUuid(buffer, packet.id);
             case UNBIND_ANCHOR -> buffer.writeUUID(packet.id);
             case MOVE_ANCHOR -> {
@@ -170,7 +179,7 @@ public final class BuilderCommandPacket {
             case SET_MATCH -> setMatch(buffer.readEnum(SurfaceMatchMode.class));
             case SET_LIMITS -> setLimits(buffer.readVarInt(), buffer.readVarInt());
             case SET_HISTORY_RECORDING -> setHistoryRecording(buffer.readBoolean());
-            case USE -> use(Target.read(buffer));
+            case USE -> use(Target.read(buffer), buffer.readBoolean());
             case RESUME -> resume(readOptionalUuid(buffer));
             case CANCEL -> cancel(readOptionalUuid(buffer));
             case UNBIND_ANCHOR -> unbindAnchor(buffer.readUUID());
@@ -198,6 +207,8 @@ public final class BuilderCommandPacket {
         RealmwrightData.ensureId(scepter);
 
         if (packet.action == Action.OPEN_MENU) {
+            // Shift + middle mouse is a client input gesture; opening this read-only screen has
+            // no server-side modifier permission to enforce.
             BuilderNetworkBridge.openMenu(player);
             return;
         }
@@ -209,7 +220,9 @@ public final class BuilderCommandPacket {
         }
 
         if (packet.action == Action.USE) {
-            if (useTarget(player, scepter, packet.target)) BuilderNetworkBridge.sync(player);
+            if (useTarget(player, scepter, packet.target, packet.first != 0)) {
+                BuilderNetworkBridge.sync(player);
+            }
             return;
         }
 
@@ -243,7 +256,8 @@ public final class BuilderCommandPacket {
         BuilderNetworkBridge.sync(player);
     }
 
-    private static boolean useTarget(ServerPlayer player, ItemStack scepter, @Nullable Target requested) {
+    private static boolean useTarget(ServerPlayer player, ItemStack scepter, @Nullable Target requested,
+                                     boolean interactionOverride) {
         if (!BuilderRuntime.settings().enabled()) {
             player.displayClientMessage(Component.translatable("message.mydimension.builder.disabled"), true);
             return false;
@@ -255,7 +269,7 @@ public final class BuilderCommandPacket {
         }
 
         BlockEntity blockEntity = player.serverLevel().getBlockEntity(hit.getBlockPos());
-        if (blockEntity instanceof ResonantAnchorTarget anchor) {
+        if (!interactionOverride && blockEntity instanceof ResonantAnchorTarget anchor) {
             if (!anchor.mayUse(player)) {
                 player.displayClientMessage(Component.translatable(
                         "message.mydimension.builder.anchor_forbidden"), true);
@@ -270,6 +284,13 @@ public final class BuilderCommandPacket {
             };
             player.displayClientMessage(Component.translatable(key), true);
             return result == AnchorBindings.BindResult.BOUND;
+        }
+
+        if (!BuilderInteractionPolicy.permitsScepter(interactionOverride,
+                player.serverLevel().getBlockState(hit.getBlockPos()))) {
+            // Never trust a client to have applied the interaction-priority rule. An unshifted
+            // forged/stale USE packet aimed at a container, machine or button cannot modify it.
+            return false;
         }
 
         BuilderOperationManager.Result result = BuilderOperationManager.executeValidatedSurface(

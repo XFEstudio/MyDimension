@@ -57,6 +57,20 @@ public final class AnchorBindings {
         return true;
     }
 
+    /** Removes UUIDs that no longer have any server-side anchor index entry. */
+    public static boolean pruneMissing(ItemStack stack, AnchorIndexSavedData index) {
+        Objects.requireNonNull(index, "index");
+        List<UUID> entries = read(stack);
+        List<UUID> retained = entries.stream()
+                .filter(anchorId -> index.find(anchorId).isPresent())
+                .toList();
+        if (retained.size() == entries.size()) {
+            return false;
+        }
+        RealmwrightData.setAnchors(stack, retained);
+        return true;
+    }
+
     public static boolean move(ItemStack stack, UUID anchorId, int targetIndex) {
         List<UUID> entries = new ArrayList<>(read(stack));
         int currentIndex = entries.indexOf(anchorId);

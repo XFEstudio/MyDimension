@@ -134,6 +134,8 @@ public final class BuilderPreviewRenderer {
                     BuilderPreviewRenderTypes.ghostModel(),
                     section -> section.ghostBuffers(drawableGhostSections),
                     true, 1.0F);
+            drawSpecialGhostSections(poseStack, event, visibleSections,
+                    drawableGhostSections);
             BuilderPreviewRenderTypes.updateWaveUniforms();
             drawCachedSections(poseStack, event, visibleSections,
                     BuilderPreviewRenderTypes.projectionWave(),
@@ -162,6 +164,56 @@ public final class BuilderPreviewRenderer {
             RenderSystem.setShaderColor(1.0F, 1.0F, 1.0F, 1.0F);
             VertexBuffer.unbind();
             poseStack.popPose();
+        }
+    }
+
+    /**
+     * Draws captured block-entity projection geometry with the exact RenderType requested by its
+     * renderer. This preserves non-block atlases such as the chest sheet while the explicit blend
+     * state keeps the projection tint translucent even for entity-cutout render types.
+     */
+    private static void drawSpecialGhostSections(
+            PoseStack poseStack,
+            RenderLevelStageEvent event,
+            List<BuilderPreviewSectionMeshCache.SectionMesh> sections,
+            Set<BuilderPreviewSectionMeshCache.SectionKey> drawableSections) {
+        if (sections.isEmpty()) return;
+        try {
+            for (int index = sections.size() - 1; index >= 0; index--) {
+                BuilderPreviewSectionMeshCache.SectionMesh section = sections.get(index);
+                List<BuilderPreviewSectionMeshCache.SpecialGhostBuffer> buffers =
+                        section.specialGhostBuffers(drawableSections);
+                if (buffers.isEmpty()) continue;
+                poseStack.pushPose();
+                poseStack.translate(section.originX(), section.originY(), section.originZ());
+                try {
+                    for (BuilderPreviewSectionMeshCache.SpecialGhostBuffer special : buffers) {
+                        VertexBuffer buffer = special.buffer();
+                        if (buffer == null || buffer.isInvalid()) continue;
+                        RenderType renderType = special.renderType();
+                        renderType.setupRenderState();
+                        RenderSystem.enableBlend();
+                        RenderSystem.defaultBlendFunc();
+                        try {
+                            ShaderInstance shader = RenderSystem.getShader();
+                            if (shader == null) continue;
+                            buffer.bind();
+                            buffer.drawWithShader(poseStack.last().pose(),
+                                    event.getProjectionMatrix(), shader);
+                        } finally {
+                            VertexBuffer.unbind();
+                            renderType.clearRenderState();
+                        }
+                    }
+                } finally {
+                    poseStack.popPose();
+                }
+            }
+        } finally {
+            VertexBuffer.unbind();
+            RenderSystem.setShaderColor(1.0F, 1.0F, 1.0F, 1.0F);
+            RenderSystem.disableBlend();
+            RenderSystem.defaultBlendFunc();
         }
     }
 

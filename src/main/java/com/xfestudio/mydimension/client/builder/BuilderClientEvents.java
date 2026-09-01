@@ -2,6 +2,7 @@ package com.xfestudio.mydimension.client.builder;
 
 import com.mojang.blaze3d.platform.InputConstants;
 import com.xfestudio.mydimension.MyDimension;
+import com.xfestudio.mydimension.builder.BuilderInteractionPolicy;
 import com.xfestudio.mydimension.builder.BuilderMode;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.Screen;
@@ -42,7 +43,13 @@ public final class BuilderClientEvents {
         }
 
         if (event.isPickBlock()) {
-            if (!Screen.hasAltDown() && !Screen.hasControlDown() && !Screen.hasShiftDown()) {
+            if (!Screen.hasAltDown() && !Screen.hasControlDown() && Screen.hasShiftDown()) {
+                drain(BuilderKeyMappings.OPEN_MENU);
+                drain(BuilderKeyMappings.TOGGLE_MODE);
+                openMenu();
+                cancel(event);
+            } else if (!Screen.hasAltDown() && !Screen.hasControlDown() && !Screen.hasShiftDown()) {
+                drain(BuilderKeyMappings.OPEN_MENU);
                 drain(BuilderKeyMappings.TOGGLE_MODE);
                 toggleMode();
                 cancel(event);
@@ -51,12 +58,6 @@ public final class BuilderClientEvents {
         }
 
         if (event.isUseItem() && event.getHand() == InteractionHand.MAIN_HAND) {
-            if (Screen.hasShiftDown()) {
-                BuilderClientServices.send(new BuilderClientCommand.OpenMenu());
-                BuilderClientServices.openToolScreen();
-                cancel(event);
-                return;
-            }
             if (Screen.hasAltDown() && BuilderPreviewState.get().hasBlueprintWheelActions()) {
                 ALT_ACTIONS.openNavigation();
                 ALT_ACTIONS.activateOrConfirm();
@@ -100,8 +101,27 @@ public final class BuilderClientEvents {
                 BuilderClientCommand.UseKind kind = preview.isBlueprintPreviewActive()
                         ? BuilderClientCommand.UseKind.PLACE_BLUEPRINT
                         : BuilderClientCommand.UseKind.AUTO;
+                if (kind == BuilderClientCommand.UseKind.AUTO && !Screen.hasShiftDown()) {
+                    boolean sameVanillaTarget = sameVanillaBlockTarget(
+                            minecraft.hitResult, blockTarget);
+                    if (BuilderInteractionPolicy.prioritizesBlock(
+                            minecraft.level.getBlockState(blockTarget.getBlockPos()))) {
+                        // Let vanilla call the block first. If it returns PASS, the ordinary item
+                        // policy below still refuses the scepter. During a one-frame reach mismatch,
+                        // cancel instead of accidentally using a different cached vanilla target.
+                        if (!sameVanillaTarget) cancel(event);
+                        return;
+                    }
+                    if (sameVanillaTarget) {
+                        // A non-interactive block returns PASS and naturally reaches Item#useOn.
+                        return;
+                    }
+                    // The configured snapshot and the reach attribute normally agree. If they
+                    // are briefly out of sync, retain extended-range use only for a non-interactive
+                    // surface; an interaction-priority target is never sent through this fallback.
+                }
                 BuilderClientServices.send(new BuilderClientCommand.UseTarget(
-                        commandTarget, kind, preview.activeJobId()));
+                        commandTarget, kind, preview.activeJobId(), Screen.hasShiftDown()));
             }
             cancel(event);
             return;
@@ -169,6 +189,7 @@ public final class BuilderClientEvents {
         BuilderAnchorPreviewTracker.tick(minecraft);
         if (!BuilderClientServices.isHoldingRealmwright(minecraft)) {
             drain(BuilderKeyMappings.TOGGLE_MODE);
+            drain(BuilderKeyMappings.OPEN_MENU);
             drain(BuilderKeyMappings.UNDO);
             drain(BuilderKeyMappings.REDO);
             ALT_ACTIONS.reset();
@@ -180,6 +201,7 @@ public final class BuilderClientEvents {
         }
         if (minecraft.screen != null) {
             drain(BuilderKeyMappings.TOGGLE_MODE);
+            drain(BuilderKeyMappings.OPEN_MENU);
             drain(BuilderKeyMappings.UNDO);
             drain(BuilderKeyMappings.REDO);
             ALT_ACTIONS.reset();
@@ -192,8 +214,18 @@ public final class BuilderClientEvents {
             return;
         }
 
+        while (BuilderKeyMappings.OPEN_MENU.consumeClick()) {
+            // Forge records every mapping sharing a mouse button before applying modifiers.
+            // Consume the Shift binding on every middle click, but act only for exact Shift.
+            if (Screen.hasShiftDown() && !Screen.hasAltDown() && !Screen.hasControlDown()) {
+                drain(BuilderKeyMappings.TOGGLE_MODE);
+                openMenu();
+            }
+        }
         while (BuilderKeyMappings.TOGGLE_MODE.consumeClick()) {
-            toggleMode();
+            if (!Screen.hasShiftDown() && !Screen.hasAltDown() && !Screen.hasControlDown()) {
+                toggleMode();
+            }
         }
         while (BuilderKeyMappings.UNDO.consumeClick()) {
             BuilderClientServices.send(new BuilderClientCommand.Undo());
@@ -226,6 +258,11 @@ public final class BuilderClientEvents {
         BuilderClientServices.send(new BuilderClientCommand.SetMode(next));
     }
 
+    private static void openMenu() {
+        BuilderClientServices.send(new BuilderClientCommand.OpenMenu());
+        BuilderClientServices.openToolScreen();
+    }
+
     private static void cancel(InputEvent.InteractionKeyMappingTriggered event) {
         event.setSwingHand(false);
         event.setCanceled(true);
@@ -250,6 +287,14 @@ public final class BuilderClientEvents {
         BlockPos pos = result.getBlockPos();
         return new BuilderClientCommand.Target(pos, result.getDirection(), result.getLocation(),
                 result.isInside(), direct);
+    }
+
+    static boolean sameVanillaBlockTarget(HitResult vanillaTarget, BlockHitResult requested) {
+        return vanillaTarget instanceof BlockHitResult blockTarget
+                && vanillaTarget.getType() == HitResult.Type.BLOCK
+                && blockTarget.getBlockPos().equals(requested.getBlockPos())
+                && blockTarget.getDirection() == requested.getDirection()
+                && blockTarget.isInside() == requested.isInside();
     }
 
     @javax.annotation.Nullable

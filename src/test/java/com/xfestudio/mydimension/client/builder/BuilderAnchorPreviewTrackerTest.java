@@ -66,6 +66,21 @@ final class BuilderAnchorPreviewTrackerTest {
         assertFalse(BuilderAnchorPreviewTracker.matchesBindings(List.of(first), known));
     }
 
+    @Test
+    void evictsAResolvedPositionWhenTheLoadedAnchorIdentityNoLongerMatches() {
+        UUID removed = UUID.randomUUID();
+        UUID remaining = UUID.randomUUID();
+        BlockPos removedPos = new BlockPos(5, 40, 7);
+        BlockPos remainingPos = new BlockPos(6, 40, 7);
+        List<BuilderClientSnapshot.AnchorView> cached = List.of(
+                anchor(removed, removedPos, OVERWORLD, BuilderClientSnapshot.AnchorStatus.AVAILABLE),
+                anchor(remaining, remainingPos, OVERWORLD, BuilderClientSnapshot.AnchorStatus.AVAILABLE));
+
+        assertEquals(List.of(remainingPos), BuilderAnchorPreviewTracker.filterPositions(
+                OVERWORLD, List.of(removed, remaining), cached,
+                (id, ignoredPosition) -> !id.equals(removed)));
+    }
+
     private static BuilderClientSnapshot.AnchorView anchor(
             UUID id, BlockPos position, ResourceLocation dimension,
             BuilderClientSnapshot.AnchorStatus status) {

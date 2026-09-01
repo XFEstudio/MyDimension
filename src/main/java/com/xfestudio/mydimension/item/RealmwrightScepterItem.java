@@ -3,6 +3,7 @@ package com.xfestudio.mydimension.item;
 import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.Multimap;
 import com.xfestudio.mydimension.builder.BuilderMode;
+import com.xfestudio.mydimension.builder.BuilderInteractionPolicy;
 import com.xfestudio.mydimension.builder.BuilderNetworkBridge;
 import com.xfestudio.mydimension.builder.BuilderOperationManager;
 import com.xfestudio.mydimension.builder.BuilderRuntime;
@@ -51,29 +52,27 @@ public final class RealmwrightScepterItem extends Item {
     public InteractionResult useOn(UseOnContext context) {
         Player player = context.getPlayer();
         if (player == null || context.getHand() != InteractionHand.MAIN_HAND) return InteractionResult.PASS;
+        boolean shiftDown = player.isShiftKeyDown();
+        BlockEntity blockEntity = context.getLevel().getBlockEntity(context.getClickedPos());
+        if (!shiftDown && blockEntity instanceof ResonantAnchorTarget) {
+            if (context.getLevel().isClientSide()) return InteractionResult.SUCCESS;
+            return bindAnchor((ServerPlayer) player, context.getItemInHand(),
+                    (ResonantAnchorTarget) blockEntity);
+        }
+        // Physical Shift overrides are sent by BuilderClientEvents with an explicit packet bit.
+        // The ordinary vanilla Item#useOn packet carries only the remappable sneak state, so it
+        // must never bypass an interaction-priority block on its own.
+        if (BuilderInteractionPolicy.prioritizesBlock(
+                context.getLevel().getBlockState(context.getClickedPos()))) {
+            return InteractionResult.PASS;
+        }
         if (context.getLevel().isClientSide()) return InteractionResult.SUCCESS;
         ServerPlayer serverPlayer = (ServerPlayer) player;
         ItemStack scepter = context.getItemInHand();
         RealmwrightData.ensureId(scepter);
-        if (player.isShiftKeyDown()) {
-            BuilderNetworkBridge.openMenu(serverPlayer);
-            return InteractionResult.CONSUME;
-        }
         if (!BuilderRuntime.settings().enabled()) {
             player.displayClientMessage(Component.translatable("message.mydimension.builder.disabled"), true);
             return InteractionResult.FAIL;
-        }
-        BlockEntity blockEntity = context.getLevel().getBlockEntity(context.getClickedPos());
-        if (blockEntity instanceof ResonantAnchorTarget target) {
-            if (!target.mayUse(serverPlayer)) {
-                player.displayClientMessage(Component.translatable("message.mydimension.builder.anchor_forbidden"), true);
-                return InteractionResult.FAIL;
-            }
-            boolean bound = RealmwrightData.bind(scepter, target.anchorId(), BuilderConfig.MAX_BOUND_ANCHORS.get());
-            player.displayClientMessage(Component.translatable(bound
-                    ? "message.mydimension.builder.anchor_bound" : "message.mydimension.builder.anchor_already_bound"), true);
-            BuilderNetworkBridge.sync(serverPlayer);
-            return InteractionResult.CONSUME;
         }
         net.minecraft.world.phys.BlockHitResult authoritativeHit = new net.minecraft.world.phys.BlockHitResult(
                 context.getClickLocation(), context.getClickedFace(), context.getClickedPos(), context.isInside());
@@ -90,13 +89,26 @@ public final class RealmwrightScepterItem extends Item {
     public InteractionResultHolder<ItemStack> use(Level level, Player player, InteractionHand hand) {
         ItemStack stack = player.getItemInHand(hand);
         if (hand != InteractionHand.MAIN_HAND) return InteractionResultHolder.pass(stack);
-        if (player.isShiftKeyDown()) {
-            if (!level.isClientSide() && player instanceof ServerPlayer serverPlayer) {
-                BuilderNetworkBridge.openMenu(serverPlayer);
-            }
-            return InteractionResultHolder.sidedSuccess(stack, level.isClientSide());
-        }
         return InteractionResultHolder.pass(stack);
+    }
+
+    private static InteractionResult bindAnchor(ServerPlayer player, ItemStack scepter,
+                                                ResonantAnchorTarget target) {
+        RealmwrightData.ensureId(scepter);
+        if (!BuilderRuntime.settings().enabled()) {
+            player.displayClientMessage(Component.translatable("message.mydimension.builder.disabled"), true);
+            return InteractionResult.FAIL;
+        }
+        if (!target.mayUse(player)) {
+            player.displayClientMessage(Component.translatable("message.mydimension.builder.anchor_forbidden"), true);
+            return InteractionResult.FAIL;
+        }
+        boolean bound = RealmwrightData.bind(scepter, target.anchorId(), BuilderConfig.MAX_BOUND_ANCHORS.get());
+        player.displayClientMessage(Component.translatable(bound
+                ? "message.mydimension.builder.anchor_bound"
+                : "message.mydimension.builder.anchor_already_bound"), true);
+        BuilderNetworkBridge.sync(player);
+        return InteractionResult.CONSUME;
     }
 
     @Override

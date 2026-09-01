@@ -93,15 +93,15 @@ public record BuilderSnapshotPacket(boolean enabled, BuilderMode mode, SurfaceMa
     }
 
     private static List<Anchor> anchors(ServerPlayer player, ItemStack scepter) {
-        List<UUID> ids = AnchorBindings.read(scepter);
         AnchorIndexSavedData index = AnchorIndexSavedData.get(player.getServer());
+        boolean bindingsChanged = AnchorBindings.pruneMissing(scepter, index);
+        List<UUID> ids = AnchorBindings.read(scepter);
         List<Anchor> result = new ArrayList<>(Math.min(ids.size(), MAX_ANCHORS));
         for (int i = 0; i < ids.size() && i < MAX_ANCHORS; i++) {
             UUID id = ids.get(i);
             AnchorIndexSavedData.AnchorLocation location = index.find(id).orElse(null);
             if (location == null) {
-                result.add(new Anchor(id, "Anchor " + (i + 1), player.level().dimension().location(),
-                        0L, AnchorStatus.DISCONNECTED, false, false));
+                bindingsChanged = true;
                 continue;
             }
 
@@ -110,7 +110,9 @@ public record BuilderSnapshotPacket(boolean enabled, BuilderMode mode, SurfaceMa
             boolean publicAccess = false;
             ServerLevel level = player.getServer().getLevel(location.dimension());
             if (level == null) {
-                status = AnchorStatus.DISCONNECTED;
+                index.unregister(id, location);
+                bindingsChanged = true;
+                continue;
             } else if (level.hasChunkAt(location.position())) {
                 if (level.getBlockEntity(location.position()) instanceof ResonantSupplyAnchorBlockEntity anchor
                         && anchor.anchorId().equals(id)) {
@@ -118,11 +120,25 @@ public record BuilderSnapshotPacket(boolean enabled, BuilderMode mode, SurfaceMa
                     publicAccess = anchor.publicAccess();
                     status = anchor.canUse(player) ? AnchorStatus.AVAILABLE : AnchorStatus.FORBIDDEN;
                 } else {
-                    status = AnchorStatus.DISCONNECTED;
+                    // Heal an index entry whose block was removed by a path that did not leave a
+                    // live matching block entity.  This also prevents later snapshots from
+                    // continuing to advertise the obsolete world position.
+                    index.unregister(id, location);
+                    bindingsChanged = true;
+                    continue;
                 }
             }
-            result.add(new Anchor(id, "Anchor " + (i + 1), location.dimension().location(),
+            result.add(new Anchor(id, "Anchor " + (result.size() + 1), location.dimension().location(),
                     location.position().asLong(), status, owner, publicAccess));
+        }
+        if (bindingsChanged) {
+            // Also removes entries whose index was invalidated while resolving loaded chunks.
+            AnchorBindings.pruneMissing(scepter, index);
+            player.getInventory().setChanged();
+            player.containerMenu.broadcastChanges();
+            if (player.inventoryMenu != player.containerMenu) {
+                player.inventoryMenu.broadcastChanges();
+            }
         }
         return result;
     }

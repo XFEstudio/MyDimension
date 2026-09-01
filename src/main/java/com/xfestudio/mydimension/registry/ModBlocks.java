@@ -33,6 +33,7 @@ public final class ModBlocks {
             "resonant_supply_anchor",
             () -> new ResonantSupplyAnchorBlock(BlockBehaviour.Properties.copy(Blocks.LODESTONE)
                     .noOcclusion()
+                    .requiresCorrectToolForDrops()
                     .strength(5.0F, 1200.0F)));
 
     private ModBlocks() {

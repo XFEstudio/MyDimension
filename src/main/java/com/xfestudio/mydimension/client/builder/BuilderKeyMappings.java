@@ -23,6 +23,14 @@ public final class BuilderKeyMappings {
             GLFW.GLFW_MOUSE_BUTTON_MIDDLE,
             CATEGORY
     );
+    public static final KeyMapping OPEN_MENU = new KeyMapping(
+            "key.mydimension.realmwright.open_menu",
+            KeyConflictContext.IN_GAME,
+            KeyModifier.SHIFT,
+            InputConstants.Type.MOUSE,
+            GLFW.GLFW_MOUSE_BUTTON_MIDDLE,
+            CATEGORY
+    );
     public static final KeyMapping UNDO = new KeyMapping(
             "key.mydimension.realmwright.undo",
             KeyConflictContext.IN_GAME,
@@ -46,6 +54,7 @@ public final class BuilderKeyMappings {
     @SubscribeEvent
     public static void register(RegisterKeyMappingsEvent event) {
         event.register(TOGGLE_MODE);
+        event.register(OPEN_MENU);
         event.register(UNDO);
         event.register(REDO);
     }

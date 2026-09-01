@@ -5,6 +5,7 @@ import com.xfestudio.mydimension.registry.ModBlocks;
 import com.xfestudio.mydimension.registry.ModItems;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.world.InteractionHand;
@@ -12,6 +13,7 @@ import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.item.context.UseOnContext;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
@@ -192,6 +194,58 @@ public final class ResonantSupplyAnchorGameTests {
         helper.assertTrue(index.findTargetingChunk(helper.getLevel().dimension(),
                         new ChunkPos(baseChunk.x + 2, baseChunk.z)).isEmpty(),
                 "Removing an anchor left a target-chunk wakeup route");
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
+    public static void removalInvalidatesThePersistentAnchorIndex(GameTestHelper helper) {
+        BlockPos container = helper.absolutePos(new BlockPos(2, 2, 2));
+        BlockPos anchorPosition = container.east();
+        helper.getLevel().setBlock(container, Blocks.CHEST.defaultBlockState(), Block.UPDATE_ALL);
+        helper.getLevel().setBlock(anchorPosition,
+                ModBlocks.RESONANT_SUPPLY_ANCHOR.get().defaultBlockState()
+                        .setValue(ResonantSupplyAnchorBlock.FACING, Direction.WEST),
+                Block.UPDATE_ALL);
+        if (!(helper.getLevel().getBlockEntity(anchorPosition)
+                instanceof ResonantSupplyAnchorBlockEntity anchor)) {
+            helper.fail("Anchor block entity was not created");
+            return;
+        }
+
+        anchor.synchronizeIndex();
+        UUID id = anchor.anchorId();
+        AnchorIndexSavedData index = AnchorIndexSavedData.get(helper.getLevel().getServer());
+        helper.assertTrue(index.find(id).isPresent(), "Placed anchor was not indexed");
+
+        helper.getLevel().removeBlock(anchorPosition, false);
+        helper.assertTrue(index.find(id).isEmpty(), "Removed anchor left a stale persistent index entry");
+
+        ItemStack staleScepter = new ItemStack(ModItems.REALMWRIGHT_SCEPTER.get());
+        AnchorBindings.bind(staleScepter, id, 8);
+        helper.assertTrue(AnchorBindings.pruneMissing(staleScepter, index),
+                "A scepter read did not prune its destroyed anchor binding");
+        helper.assertTrue(AnchorBindings.read(staleScepter).isEmpty(),
+                "Destroyed anchor remained visible in the scepter binding list");
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
+    public static void onlyDiamondOrBetterPickaxesAreCorrectForAnchorDrops(GameTestHelper helper) {
+        BlockState anchor = ModBlocks.RESONANT_SUPPLY_ANCHOR.get().defaultBlockState();
+        helper.assertTrue(anchor.requiresCorrectToolForDrops(),
+                "Supply anchor no longer requires a correct tool for drops");
+        helper.assertTrue(anchor.is(BlockTags.MINEABLE_WITH_PICKAXE),
+                "Supply anchor is not mineable with pickaxes");
+        helper.assertTrue(anchor.is(BlockTags.NEEDS_DIAMOND_TOOL),
+                "Supply anchor no longer requires diamond-tier tools");
+        helper.assertTrue(!new ItemStack(Items.IRON_PICKAXE).isCorrectToolForDrops(anchor),
+                "Iron pickaxe was incorrectly accepted for supply-anchor drops");
+        helper.assertTrue(!new ItemStack(Items.DIAMOND_SHOVEL).isCorrectToolForDrops(anchor),
+                "A diamond-tier tool of the wrong type was incorrectly accepted");
+        helper.assertTrue(new ItemStack(Items.DIAMOND_PICKAXE).isCorrectToolForDrops(anchor),
+                "Diamond pickaxe was not accepted for supply-anchor drops");
+        helper.assertTrue(new ItemStack(Items.NETHERITE_PICKAXE).isCorrectToolForDrops(anchor),
+                "Netherite pickaxe was not accepted for supply-anchor drops");
         helper.succeed();
     }
 

@@ -24,6 +24,7 @@ import net.minecraftforge.client.event.ModelEvent;
 public final class RealmwrightScepterRenderer extends BlockEntityWithoutLevelRenderer {
     private static final ResourceLocation BUILD_MODEL = model("realmwright_scepter_build");
     private static final ResourceLocation DEMOLISH_MODEL = model("realmwright_scepter_demolish");
+    private static final ResourceLocation EXTENSION_MODEL = model("realmwright_scepter_extension");
     private static final ResourceLocation LOWER_RING_MODEL = model("realmwright_scepter_ring_lower");
     private static final ResourceLocation UPPER_RING_MODEL = model("realmwright_scepter_ring_upper");
     private static final ResourceLocation FLOATING_MODEL = model("realmwright_scepter_floating");
@@ -41,6 +42,7 @@ public final class RealmwrightScepterRenderer extends BlockEntityWithoutLevelRen
     public static void registerAdditionalModels(ModelEvent.RegisterAdditional event) {
         event.register(BUILD_MODEL);
         event.register(DEMOLISH_MODEL);
+        event.register(EXTENSION_MODEL);
         event.register(LOWER_RING_MODEL);
         event.register(UPPER_RING_MODEL);
         event.register(FLOATING_MODEL);
@@ -61,6 +63,15 @@ public final class RealmwrightScepterRenderer extends BlockEntityWithoutLevelRen
         ResourceLocation bodyModel = RealmwrightData.mode(stack) == BuilderMode.DEMOLISH
                 ? DEMOLISH_MODEL : BUILD_MODEL;
         renderModel(minecraft, bodyModel, stack, pose, buffers, packedLight, packedOverlay);
+
+        // Vanilla item-model elements are restricted to [-16, 32] on every axis. The requested
+        // 1.5x shaft exceeds that span, so its lower section is baked as a second valid model and
+        // translated back into the exact continuous position here instead of invalidating the
+        // whole body into Minecraft's magenta/black missing-model cube.
+        pose.pushPose();
+        pose.translate(0.0D, -14.55D / 16.0D, 0.0D);
+        renderModel(minecraft, EXTENSION_MODEL, stack, pose, buffers, packedLight, packedOverlay);
+        pose.popPose();
 
         pose.pushPose();
         rotateAroundShaft(pose, LOWER_RING_PIVOT_Y, ringTicks * 4.0F, -5.0F);
