@@ -150,6 +150,19 @@ public final class BuilderPreviewState {
     private volatile Focus focus;
     @Nullable
     private volatile Candidate controlCandidate;
+    @Nullable
+    private ResourceKey<Level> layerDimension;
+    @Nullable
+    private Selection layerSelection;
+    @Nullable
+    private UUID layerActiveJobId;
+    private List<Cell> surfaceCells = List.of();
+    private List<Cell> missingCells = List.of();
+    private List<Cell> deploymentCells = List.of();
+    private boolean deploymentActive;
+    private boolean serverCancelable;
+    private boolean layersInitialized;
+    private int layerRevision;
     private record PublishedPreview(Snapshot snapshot,
                                     Map<BlockPos, MissingTarget> interactiveGroups,
                                     @Nullable AABB blueprintBounds) {
@@ -171,7 +184,113 @@ public final class BuilderPreviewState {
         return frame == null ? null : frame.snapshot();
     }
 
+    /**
+     * Replaces every preview layer from one already-composed snapshot. Production callers should
+     * prefer the layer-specific update methods below so unrelated workflows cannot erase each
+     * other; this entry point remains useful at the immutable boundary and in focused tests.
+     */
     public void accept(Snapshot value) {
+        resetLayers(value.dimension());
+        layerSelection = value.selection();
+        layerActiveJobId = value.activeJobId();
+        missingCells = value.cells().stream()
+                .filter(cell -> cell.kind() == Kind.MISSING).toList();
+        List<Cell> ordinary = value.cells().stream()
+                .filter(cell -> cell.kind() != Kind.MISSING).toList();
+        deploymentActive = value.blueprintPreview();
+        deploymentCells = deploymentActive ? ordinary : List.of();
+        surfaceCells = deploymentActive ? List.of() : ordinary;
+        serverCancelable = value.cancelable() && value.activeJobId() != null;
+        layerRevision = value.revision();
+        publishComposite();
+    }
+
+    /** Replaces only the locally planned build/demolish surface. */
+    public void updateSurfacePreview(ResourceKey<Level> dimension, List<Cell> cells) {
+        ensureDimension(dimension);
+        surfaceCells = List.copyOf(cells);
+        advanceRevision(0);
+        publishComposite();
+    }
+
+    /** Removes only the locally planned surface, retaining selection and material-waiting work. */
+    public void clearSurfacePreview() {
+        if (!layersInitialized || surfaceCells.isEmpty()) return;
+        surfaceCells = List.of();
+        advanceRevision(0);
+        publishComposite();
+    }
+
+    /** Replaces only the copied source cuboid. */
+    public void updateSelection(Selection selection) {
+        ensureDimension(selection.dimension());
+        layerSelection = selection;
+        advanceRevision(0);
+        publishComposite();
+    }
+
+    /**
+     * Replaces only the server-owned material-waiting layer. A transient empty packet may be
+     * ignored while the lightweight server snapshot still advertises the same active job (the
+     * blueprint worker temporarily moves that job out of persistent pending storage while it runs).
+     */
+    public void updateMissingPreview(ResourceKey<Level> dimension, List<Cell> cells,
+                                     @Nullable UUID activeJobId, boolean cancelable,
+                                     int revision, boolean preserveTransientEmpty) {
+        ensureDimension(dimension);
+        if (preserveTransientEmpty && cells.isEmpty() && activeJobId == null
+                && layerActiveJobId != null) {
+            return;
+        }
+        missingCells = cells.stream()
+                .filter(cell -> cell.kind() == Kind.MISSING).toList();
+        layerActiveJobId = activeJobId;
+        serverCancelable = cancelable && activeJobId != null;
+        advanceRevision(revision);
+        publishComposite();
+    }
+
+    /** Activates or refreshes the movable deployment without destroying background workflows. */
+    public void updateDeploymentPreview(ResourceKey<Level> dimension, List<Cell> cells) {
+        ensureDimension(dimension);
+        deploymentActive = true;
+        deploymentCells = List.copyOf(cells);
+        // A surface target is meaningful only at the location from which it was planned. Once a
+        // deployment takes control of targeting, discard that stale layer; it is replanned on the
+        // first tick after the deployment is cancelled.
+        surfaceCells = List.of();
+        advanceRevision(0);
+        publishComposite();
+    }
+
+    private void publishComposite() {
+        if (!layersInitialized) {
+            published = null;
+            focus = null;
+            return;
+        }
+        Selection selection = layerSelection == null
+                || !Objects.equals(layerSelection.dimension(), layerDimension)
+                ? new Selection(layerDimension, null, null) : layerSelection;
+        List<Cell> foreground = deploymentActive ? deploymentCells : surfaceCells;
+        Map<BlockPos, Cell> visible = new LinkedHashMap<>(
+                Math.max(16, foreground.size() + missingCells.size()));
+        for (Cell cell : foreground) visible.put(cell.pos(), cell);
+        if (!deploymentActive) {
+            // Missing material is actionable and therefore wins a same-position collision with a
+            // passive surface projection. While a deployment is active it exclusively owns the
+            // world overlay and focus; missing work remains retained in this layer and returns as
+            // soon as placement is cancelled.
+            for (Cell cell : missingCells) visible.put(cell.pos(), cell);
+        }
+        boolean cancelable = deploymentActive || selection.active()
+                || serverCancelable && layerActiveJobId != null;
+        Snapshot snapshot = new Snapshot(layerDimension, List.copyOf(visible.values()), selection,
+                layerActiveJobId, deploymentActive, cancelable, layerRevision);
+        publishSnapshot(snapshot, deploymentActive ? deploymentCells : List.of());
+    }
+
+    private void publishSnapshot(Snapshot value, List<Cell> deploymentBoundsCells) {
         focus = null;
         if (value.cells().isEmpty()) {
             published = new PublishedPreview(value, Map.of(), null);
@@ -188,18 +307,18 @@ public final class BuilderPreviewState {
             if (cell.kind() == Kind.MISSING) {
                 targets.put(cell.pos(), cell);
             }
-            if (value.blueprintPreview()) {
-                minX = Math.min(minX, cell.pos().getX());
-                minY = Math.min(minY, cell.pos().getY());
-                minZ = Math.min(minZ, cell.pos().getZ());
-                maxX = Math.max(maxX, cell.pos().getX());
-                maxY = Math.max(maxY, cell.pos().getY());
-                maxZ = Math.max(maxZ, cell.pos().getZ());
-            }
+        }
+        for (Cell cell : deploymentBoundsCells) {
+            minX = Math.min(minX, cell.pos().getX());
+            minY = Math.min(minY, cell.pos().getY());
+            minZ = Math.min(minZ, cell.pos().getZ());
+            maxX = Math.max(maxX, cell.pos().getX());
+            maxY = Math.max(maxY, cell.pos().getY());
+            maxZ = Math.max(maxZ, cell.pos().getZ());
         }
         Map<BlockPos, MissingTarget> groups = targets.isEmpty()
                 ? Map.of() : indexMissingGroups(targets);
-        AABB bounds = value.blueprintPreview() && minX != Integer.MAX_VALUE
+        AABB bounds = deploymentActive && minX != Integer.MAX_VALUE
                 ? new AABB(minX, minY, minZ, maxX + 1.0D, maxY + 1.0D, maxZ + 1.0D)
                 : null;
         // Publish the immutable snapshot and all derived indexes together. Readers can never
@@ -211,53 +330,89 @@ public final class BuilderPreviewState {
         focus = null;
         controlCandidate = null;
         published = null;
+        clearLayers();
     }
 
     public void clearLocalWorkflow() {
-        Snapshot value = snapshot();
-        if (value != null) {
-            accept(new Snapshot(value.dimension(), List.of(),
-                    new Selection(value.dimension(), null, null), null,
-                    false, false, value.revision() + 1));
-        }
+        if (!layersInitialized) return;
+        surfaceCells = List.of();
+        missingCells = List.of();
+        deploymentCells = List.of();
+        deploymentActive = false;
+        layerActiveJobId = null;
+        serverCancelable = false;
+        layerSelection = new Selection(layerDimension, null, null);
+        advanceRevision(0);
+        publishComposite();
         focus = null;
     }
 
     /** Removes only the transformed placement, retaining the copied source cuboid. */
     public void clearPlacementPreview() {
-        Snapshot value = snapshot();
-        if (value == null || !value.blueprintPreview()) return;
-        List<Cell> remaining = value.cells().stream()
-                .filter(cell -> cell.kind() == Kind.MISSING).toList();
-        boolean stillCancelable = value.selection().active() || value.activeJobId() != null;
-        accept(new Snapshot(value.dimension(), remaining, value.selection(), value.activeJobId(),
-                false, stillCancelable, value.revision() + 1));
+        if (!layersInitialized || !deploymentActive) return;
+        deploymentActive = false;
+        deploymentCells = List.of();
+        advanceRevision(0);
+        publishComposite();
     }
 
     /** Removes only the copied source selection, retaining deployment or missing previews. */
     public void clearSelection() {
-        Snapshot value = snapshot();
-        if (value == null || !value.selection().active()) return;
-        boolean stillCancelable = value.blueprintPreview() || value.activeJobId() != null;
-        accept(new Snapshot(value.dimension(), value.cells(),
-                new Selection(value.dimension(), null, null), value.activeJobId(),
-                value.blueprintPreview(), stillCancelable, value.revision() + 1));
+        if (!layersInitialized || layerSelection == null || !layerSelection.active()) return;
+        layerSelection = new Selection(layerDimension, null, null);
+        advanceRevision(0);
+        publishComposite();
     }
 
     /** Removes only the yellow task cells after a transaction-specific cancellation. */
     public void clearMissingPreview() {
-        Snapshot value = snapshot();
-        if (value == null || value.activeJobId() == null) return;
-        List<Cell> remaining = value.cells().stream()
-                .filter(cell -> cell.kind() != Kind.MISSING).toList();
-        boolean stillCancelable = value.blueprintPreview() || value.selection().active();
-        accept(new Snapshot(value.dimension(), remaining, value.selection(), null,
-                value.blueprintPreview(), stillCancelable, value.revision() + 1));
+        if (!layersInitialized || layerActiveJobId == null) return;
+        missingCells = List.of();
+        layerActiveJobId = null;
+        serverCancelable = false;
+        advanceRevision(0);
+        publishComposite();
+    }
+
+    private void ensureDimension(ResourceKey<Level> dimension) {
+        if (!layersInitialized || !Objects.equals(layerDimension, dimension)) {
+            resetLayers(dimension);
+        }
+    }
+
+    private void resetLayers(ResourceKey<Level> dimension) {
+        clearLayers();
+        layerDimension = dimension;
+        layerSelection = new Selection(dimension, null, null);
+        layersInitialized = true;
+    }
+
+    private void clearLayers() {
+        layerDimension = null;
+        layerSelection = null;
+        layerActiveJobId = null;
+        surfaceCells = List.of();
+        missingCells = List.of();
+        deploymentCells = List.of();
+        deploymentActive = false;
+        serverCancelable = false;
+        layersInitialized = false;
+        layerRevision = 0;
+    }
+
+    private void advanceRevision(int suggestedRevision) {
+        int next = layerRevision == Integer.MAX_VALUE ? 1 : layerRevision + 1;
+        layerRevision = Math.max(next, suggestedRevision);
     }
 
     public boolean isBlueprintPreviewActive() {
         Snapshot value = snapshot();
         return value != null && value.blueprintPreview();
+    }
+
+    /** Checks the deployment layer itself; composite cells can additionally contain missing work. */
+    public boolean hasCompleteDeploymentGeneration(int expectedCells) {
+        return deploymentActive && deploymentCells.size() == Math.max(0, expectedCells);
     }
 
     public boolean hasSaveableSelection() {
@@ -409,7 +564,8 @@ public final class BuilderPreviewState {
                 ? frame.interactiveGroups() : Map.of();
         AABB visibleDeploymentBounds = snapshotVisible && value.blueprintPreview()
                 ? frame.blueprintBounds() : null;
-        AABB visibleSelectionBounds = snapshotVisible && value.selection() != null
+        AABB visibleSelectionBounds = snapshotVisible && !value.blueprintPreview()
+                && value.selection() != null
                 ? value.selection().bounds() : null;
         if (groups.isEmpty() && visibleDeploymentBounds == null
                 && visibleSelectionBounds == null && !candidateVisible) {

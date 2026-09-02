@@ -1,5 +1,6 @@
 package com.xfestudio.mydimension.builder.blueprint;
 
+import com.xfestudio.mydimension.builder.BuilderNetworkBridge;
 import com.xfestudio.mydimension.builder.BuilderOperationManager;
 import com.xfestudio.mydimension.builder.BuilderRuntime;
 import com.xfestudio.mydimension.builder.PendingBuildData;
@@ -165,6 +166,7 @@ public final class BlueprintTaskManager {
             // The executor has either compensated the entire unrecorded batch or left a
             // CONFLICTED marker for manual recovery. Never advance into the next batch.
             active.remove(player.getUUID());
+            BuilderNetworkBridge.sync(player);
             return false;
         }
         if (!task.soundPlayed && result.sound() != null) {
@@ -201,6 +203,9 @@ public final class BlueprintTaskManager {
             player.displayClientMessage(Component.translatable("message.mydimension.builder.blueprint_waiting",
                     task.missing.size()), true);
         }
+        // This is the authoritative end of the pending -> active hand-off. A completed task clears
+        // the retained yellow preview; a still-missing task replaces it with the new remainder.
+        BuilderNetworkBridge.sync(player);
     }
 
     public boolean cancel(ServerPlayer player, ItemStack scepter) {
@@ -237,6 +242,7 @@ public final class BlueprintTaskManager {
                 task.transactionId, task.dimension, BuilderTransaction.Type.BLUEPRINT,
                 task.recordHistory, true,
                 task.soundPlayed, completed, total, remaining, System.currentTimeMillis()));
+        BuilderNetworkBridge.sync(player);
     }
 
     static int accumulatedCompleted(int completed, int changed) {

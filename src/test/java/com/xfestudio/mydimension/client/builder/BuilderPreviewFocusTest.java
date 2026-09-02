@@ -179,6 +179,131 @@ class BuilderPreviewFocusTest {
         assertTrue(merged.selection().complete());
     }
 
+    @Test
+    void sourceSelectionMissingTaskAndSurfacePreviewRemainIndependent() {
+        BuilderPreviewState state = new BuilderPreviewState();
+        BuilderPreviewState.Cell surface = surface(0, 0, 0);
+        BuilderPreviewState.Cell missing = missing(1, 0, 0);
+        UUID jobId = UUID.randomUUID();
+        BuilderPreviewState.Selection selection = new BuilderPreviewState.Selection(
+                DIMENSION, new BlockPos(4, 5, 6), new BlockPos(7, 8, 9));
+
+        state.updateSurfacePreview(DIMENSION, List.of(surface));
+        state.updateSelection(selection);
+        state.updateMissingPreview(DIMENSION, List.of(missing), jobId, true, 8, false);
+
+        BuilderPreviewState.Snapshot snapshot = state.snapshot();
+        assertNotNull(snapshot);
+        assertEquals(List.of(surface, missing), snapshot.cells());
+        assertEquals(selection, snapshot.selection());
+        assertEquals(jobId, snapshot.activeJobId());
+        assertFalse(snapshot.blueprintPreview());
+        assertTrue(snapshot.cancelable());
+    }
+
+    @Test
+    void deploymentExclusivelyOwnsWorldOverlayWithoutLosingMissingLayer() {
+        BuilderPreviewState state = new BuilderPreviewState();
+        BuilderPreviewState.Cell deployment = surface(2, 3, 4);
+        BuilderPreviewState.Cell collidingMissing = missing(2, 3, 4);
+        BuilderPreviewState.Cell remoteMissing = missing(30, 40, 50);
+
+        state.updateMissingPreview(DIMENSION, List.of(collidingMissing, remoteMissing),
+                UUID.randomUUID(), true, 2, false);
+        state.updateDeploymentPreview(DIMENSION, List.of(deployment));
+
+        assertEquals(List.of(deployment), state.snapshot().cells());
+        assertEquals(new AABB(2, 3, 4, 3, 4, 5), state.blueprintBounds(),
+                "independent missing cells must not enlarge the deployment focus volume");
+
+        state.clearPlacementPreview();
+
+        assertEquals(List.of(collidingMissing, remoteMissing), state.snapshot().cells(),
+                "hidden missing work must return immediately after deployment cancellation");
+    }
+
+    @Test
+    void deploymentHidesOnlySurfaceAndCancellationRestoresBackgroundWorkflow() {
+        BuilderPreviewState state = new BuilderPreviewState();
+        BuilderPreviewState.Cell surface = surface(0, 0, 0);
+        BuilderPreviewState.Cell missing = missing(1, 0, 0);
+        BuilderPreviewState.Cell deployment = surface(2, 0, 0);
+        UUID jobId = UUID.randomUUID();
+        BuilderPreviewState.Selection selection = new BuilderPreviewState.Selection(
+                DIMENSION, new BlockPos(5, 5, 5), new BlockPos(6, 6, 6));
+        state.updateSurfacePreview(DIMENSION, List.of(surface));
+        state.updateSelection(selection);
+        state.updateMissingPreview(DIMENSION, List.of(missing), jobId, true, 4, false);
+
+        state.updateDeploymentPreview(DIMENSION, List.of(deployment));
+
+        assertTrue(state.snapshot().blueprintPreview());
+        assertFalse(state.snapshot().cells().contains(surface));
+        assertEquals(List.of(deployment), state.snapshot().cells());
+        assertEquals(selection, state.snapshot().selection());
+        assertEquals(jobId, state.snapshot().activeJobId());
+
+        state.clearPlacementPreview();
+
+        assertFalse(state.snapshot().blueprintPreview());
+        assertEquals(List.of(missing), state.snapshot().cells());
+        assertEquals(selection, state.snapshot().selection());
+        assertEquals(jobId, state.snapshot().activeJobId());
+    }
+
+    @Test
+    void completingSelectionDoesNotPretendToBeADeployment() {
+        BuilderPreviewState state = new BuilderPreviewState();
+        BuilderPreviewState.Selection selection = new BuilderPreviewState.Selection(
+                DIMENSION, new BlockPos(1, 2, 3), new BlockPos(4, 5, 6));
+
+        state.updateSelection(selection);
+
+        assertTrue(state.hasSaveableSelection());
+        assertFalse(state.isBlueprintPreviewActive());
+        assertNull(state.blueprintBounds());
+    }
+
+    @Test
+    void transientEmptyServerPreviewKeepsSameAdvertisedJob() {
+        BuilderPreviewState state = new BuilderPreviewState();
+        BuilderPreviewState.Cell surface = surface(0, 0, 0);
+        BuilderPreviewState.Cell missing = missing(1, 0, 0);
+        UUID jobId = UUID.randomUUID();
+        state.updateSurfacePreview(DIMENSION, List.of(surface));
+        state.updateMissingPreview(DIMENSION, List.of(missing), jobId, true, 3, false);
+        BuilderPreviewState.Snapshot before = state.snapshot();
+
+        state.updateMissingPreview(DIMENSION, List.of(), null, false, 4, true);
+
+        assertSame(before, state.snapshot());
+        assertEquals(jobId, state.activeJobId());
+        assertEquals(List.of(surface, missing), state.snapshot().cells());
+
+        state.updateMissingPreview(DIMENSION, List.of(), null, false, 5, false);
+
+        assertNull(state.activeJobId());
+        assertEquals(List.of(surface), state.snapshot().cells());
+    }
+
+    @Test
+    void clearingSurfaceDoesNotClearSelectionOrMissingTask() {
+        BuilderPreviewState state = new BuilderPreviewState();
+        BuilderPreviewState.Cell missing = missing(2, 0, 0);
+        UUID jobId = UUID.randomUUID();
+        BuilderPreviewState.Selection selection = new BuilderPreviewState.Selection(
+                DIMENSION, new BlockPos(3, 3, 3), null);
+        state.updateSurfacePreview(DIMENSION, List.of(surface(0, 0, 0)));
+        state.updateSelection(selection);
+        state.updateMissingPreview(DIMENSION, List.of(missing), jobId, true, 2, false);
+
+        state.clearSurfacePreview();
+
+        assertEquals(List.of(missing), state.snapshot().cells());
+        assertEquals(selection, state.snapshot().selection());
+        assertEquals(jobId, state.snapshot().activeJobId());
+    }
+
     private static Map<BlockPos, BuilderPreviewState.MissingTarget> index(
             BuilderPreviewState.Cell... cells) {
         Map<BlockPos, BuilderPreviewState.Cell> byPosition = new LinkedHashMap<>();
@@ -190,5 +315,10 @@ class BuilderPreviewFocusTest {
         // Grouping and hit tests never inspect the state; null avoids registry bootstrap in JUnit.
         return new BuilderPreviewState.Cell(new BlockPos(x, y, z), null,
                 BuilderPreviewState.Kind.MISSING, true);
+    }
+
+    private static BuilderPreviewState.Cell surface(int x, int y, int z) {
+        return new BuilderPreviewState.Cell(new BlockPos(x, y, z), null,
+                BuilderPreviewState.Kind.BUILD, false);
     }
 }

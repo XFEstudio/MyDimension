@@ -23,6 +23,8 @@ public class BuilderToolScreen extends Screen {
     private static final int PANEL_WIDTH = 540;
     private static final int PANEL_HEIGHT = 322;
     private static final int PAGE_ROWS = 6;
+    private static final int WORKFLOW_ROW_TOP = 145;
+    private static final int WORKFLOW_ROW_HEIGHT = 22;
 
     private final ClientBlueprintLibrary library = ClientBlueprintLibrary.get();
     private Tab tab = Tab.OPERATIONS;
@@ -33,6 +35,9 @@ public class BuilderToolScreen extends Screen {
     private EditBox buildLimit;
     private EditBox demolishLimit;
     private EditBox aclPlayer;
+    private Button missingWorkflowCancel;
+    private Button selectionWorkflowCancel;
+    private Button deploymentWorkflowCancel;
     private int anchorOffset;
     private int blueprintOffset;
     private int historyOffset;
@@ -49,6 +54,9 @@ public class BuilderToolScreen extends Screen {
     @Override
     protected void init() {
         snapshot = BuilderClientServices.snapshot();
+        missingWorkflowCancel = null;
+        selectionWorkflowCancel = null;
+        deploymentWorkflowCancel = null;
         if (!snapshot.enabled() && tab != Tab.BLUEPRINTS && tab != Tab.SETTINGS) tab = Tab.BLUEPRINTS;
         localMode = snapshot.mode();
         localMatch = snapshot.surfaceMatch();
@@ -116,23 +124,24 @@ public class BuilderToolScreen extends Screen {
         }).bounds(left, top + 82, 172, 20).build();
         addRenderableWidget(history);
 
-        Button cancel = Button.builder(Component.translatable("screen.mydimension.realmwright.cancel_job"), button -> {
-            BuilderClientServices.send(new BuilderClientCommand.CancelActive(snapshot.activeJobId()));
-            BuilderPreviewState.get().clearLocalWorkflow();
-        }).bounds(left, top + 108, 172, 20).build();
-        cancel.active = snapshot.activeJobId() != null;
-        addRenderableWidget(cancel);
-
         Button undo = Button.builder(Component.translatable("screen.mydimension.realmwright.undo"),
                 button -> BuilderClientServices.send(new BuilderClientCommand.Undo()))
-                .bounds(left + 184, top + 108, 86, 20).build();
+                .bounds(left, top + 108, 86, 20).build();
         undo.active = snapshot.canUndo();
         addRenderableWidget(undo);
         Button redo = Button.builder(Component.translatable("screen.mydimension.realmwright.redo"),
                 button -> BuilderClientServices.send(new BuilderClientCommand.Redo()))
-                .bounds(left + 282, top + 108, 86, 20).build();
+                .bounds(left + 98, top + 108, 86, 20).build();
         redo.active = snapshot.canRedo();
         addRenderableWidget(redo);
+
+        missingWorkflowCancel = addRenderableWidget(workflowCancelButton(left, top,
+                WorkflowKind.MISSING));
+        selectionWorkflowCancel = addRenderableWidget(workflowCancelButton(left, top,
+                WorkflowKind.SELECTION));
+        deploymentWorkflowCancel = addRenderableWidget(workflowCancelButton(left, top,
+                WorkflowKind.DEPLOYMENT));
+        updateWorkflowButtons();
     }
 
     private void initSupplies() {
@@ -287,6 +296,7 @@ public class BuilderToolScreen extends Screen {
         if (buildLimit != null) buildLimit.tick();
         if (demolishLimit != null) demolishLimit.tick();
         if (aclPlayer != null) aclPlayer.tick();
+        updateWorkflowButtons();
     }
 
     @Override
@@ -336,9 +346,7 @@ public class BuilderToolScreen extends Screen {
                         left, top + 42, 0xFFBFC9D8, false);
                 graphics.drawString(font, Component.translatable("screen.mydimension.realmwright.demolish_limit"),
                         left + 132, top + 42, 0xFFBFC9D8, false);
-                String progress = snapshot.totalBlocks() <= 0 ? snapshot.status()
-                        : snapshot.completedBlocks() + " / " + snapshot.totalBlocks() + "  " + snapshot.status();
-                graphics.drawString(font, progress, left, top + 140, 0xFFE7EDF7, false);
+                renderWorkflowRows(graphics, left, top);
             }
             case SUPPLIES -> {
                 if (snapshot.anchors().isEmpty()) {
@@ -465,6 +473,103 @@ public class BuilderToolScreen extends Screen {
                 : "screen.mydimension.realmwright.history_recording.off");
     }
 
+    private Button workflowCancelButton(int left, int top, WorkflowKind kind) {
+        Button button = Button.builder(Component.translatable("gui.cancel"), ignored -> cancelWorkflow(kind))
+                .bounds(left + 318, top + WORKFLOW_ROW_TOP, 56, 18).build();
+        button.visible = false;
+        return button;
+    }
+
+    private void cancelWorkflow(WorkflowKind kind) {
+        switch (kind) {
+            case MISSING -> {
+                BuilderPreviewState previewState = BuilderPreviewState.get();
+                UUID jobId = previewState.activeJobId();
+                if (jobId == null) jobId = BuilderClientServices.snapshot().activeJobId();
+                if (jobId != null) {
+                    BuilderClientServices.send(new BuilderClientCommand.CancelActive(jobId));
+                    previewState.clearMissingPreview();
+                }
+            }
+            case SELECTION -> BuilderClientNetworkBridge.cancelSourceSelection();
+            case DEPLOYMENT -> BuilderClientNetworkBridge.cancelPlacementPreview();
+        }
+        updateWorkflowButtons();
+    }
+
+    private void renderWorkflowRows(GuiGraphics graphics, int left, int top) {
+        List<WorkflowRow> rows = workflowRows(snapshot, BuilderPreviewState.get().snapshot());
+        graphics.drawString(font, Component.translatable("screen.mydimension.realmwright.workflow.title"),
+                left, top + 133, 0xFFBFC9D8, false);
+        if (rows.isEmpty()) {
+            graphics.drawString(font,
+                    Component.translatable("screen.mydimension.realmwright.workflow.empty"),
+                    left, top + WORKFLOW_ROW_TOP + 5, 0xFF8995A7, false);
+            return;
+        }
+        for (int index = 0; index < rows.size(); index++) {
+            int y = top + WORKFLOW_ROW_TOP + index * WORKFLOW_ROW_HEIGHT;
+            graphics.fill(left, y, left + 310, y + 18, 0x7A1C2633);
+            Component clipped = Component.literal(font.plainSubstrByWidth(
+                    rows.get(index).label().getString(), 298));
+            graphics.drawString(font, clipped, left + 6, y + 5, 0xFFE7EDF7, false);
+        }
+    }
+
+    private void updateWorkflowButtons() {
+        if (missingWorkflowCancel == null || selectionWorkflowCancel == null
+                || deploymentWorkflowCancel == null) return;
+        missingWorkflowCancel.visible = false;
+        selectionWorkflowCancel.visible = false;
+        deploymentWorkflowCancel.visible = false;
+        List<WorkflowRow> rows = workflowRows(snapshot, BuilderPreviewState.get().snapshot());
+        for (int index = 0; index < rows.size(); index++) {
+            Button button = switch (rows.get(index).kind()) {
+                case MISSING -> missingWorkflowCancel;
+                case SELECTION -> selectionWorkflowCancel;
+                case DEPLOYMENT -> deploymentWorkflowCancel;
+            };
+            button.setY(contentTop() + WORKFLOW_ROW_TOP + index * WORKFLOW_ROW_HEIGHT);
+            button.visible = true;
+            button.active = true;
+        }
+    }
+
+    static List<WorkflowRow> workflowRows(BuilderClientSnapshot server,
+                                          BuilderPreviewState.Snapshot preview) {
+        java.util.ArrayList<WorkflowRow> rows = new java.util.ArrayList<>(3);
+        UUID activeJobId = preview != null && preview.activeJobId() != null
+                ? preview.activeJobId() : server.activeJobId();
+        if (activeJobId != null) {
+            int missing = preview == null ? 0 : (int) preview.cells().stream()
+                    .filter(cell -> cell.kind() == BuilderPreviewState.Kind.MISSING).count();
+            int completed = Math.max(0, server.completedBlocks());
+            int total = Math.max(Math.max(0, server.totalBlocks()), completed + missing);
+            int remaining = Math.max(missing, Math.max(0, total - completed));
+            rows.add(new WorkflowRow(WorkflowKind.MISSING,
+                    Component.translatable("screen.mydimension.realmwright.workflow.missing",
+                            completed, total, remaining)));
+        }
+        if (preview != null && preview.selection() != null && preview.selection().active()) {
+            BlockPos first = preview.selection().first();
+            BlockPos second = preview.selection().second();
+            Component label = second == null
+                    ? Component.translatable("screen.mydimension.realmwright.workflow.selection_partial")
+                    : Component.translatable("screen.mydimension.realmwright.workflow.selection",
+                    Math.abs(first.getX() - second.getX()) + 1,
+                    Math.abs(first.getY() - second.getY()) + 1,
+                    Math.abs(first.getZ() - second.getZ()) + 1);
+            rows.add(new WorkflowRow(WorkflowKind.SELECTION, label));
+        }
+        if (preview != null && preview.blueprintPreview()) {
+            long blocks = preview.cells().stream()
+                    .filter(cell -> cell.kind() != BuilderPreviewState.Kind.MISSING).count();
+            rows.add(new WorkflowRow(WorkflowKind.DEPLOYMENT,
+                    Component.translatable("screen.mydimension.realmwright.workflow.deployment", blocks)));
+        }
+        return List.copyOf(rows);
+    }
+
     private Component anchorLabel(BuilderClientSnapshot.AnchorView anchor) {
         BlockPos pos = BlockPos.of(anchor.packedPos());
         return Component.literal(anchor.name() + "  " + anchor.status().name().toLowerCase(java.util.Locale.ROOT)
@@ -529,5 +634,14 @@ public class BuilderToolScreen extends Screen {
         Tab(String translationKey) {
             this.translationKey = translationKey;
         }
+    }
+
+    enum WorkflowKind {
+        MISSING,
+        SELECTION,
+        DEPLOYMENT
+    }
+
+    record WorkflowRow(WorkflowKind kind, Component label) {
     }
 }

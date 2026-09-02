@@ -37,8 +37,9 @@ public final class BuilderSurfacePreviewPlanner {
     public static void update(Minecraft minecraft) {
         if (minecraft.player == null || minecraft.level == null) return;
         BuilderPreviewState.Snapshot workflow = BuilderPreviewState.get().snapshot();
-        if (workflow != null && (workflow.activeJobId() != null || workflow.blueprintPreview()
-                || workflow.selection().active())) {
+        // A movable deployment owns the placement target. Source selections and material-waiting
+        // jobs are independent overlays and must not suppress ordinary surface prediction.
+        if (workflow != null && workflow.blueprintPreview()) {
             reset();
             return;
         }
@@ -46,7 +47,7 @@ public final class BuilderSurfacePreviewPlanner {
         HitResult picked = minecraft.player.pick(settings.reach(), 1.0F, false);
         if (!(picked instanceof BlockHitResult hit) || picked.getType() != HitResult.Type.BLOCK) {
             if (showingSurfacePreview && ++targetMissTicks < TARGET_MISS_GRACE_TICKS) return;
-            if (showingSurfacePreview) BuilderPreviewState.get().clear();
+            if (showingSurfacePreview) BuilderPreviewState.get().clearSurfacePreview();
             reset();
             return;
         }
@@ -55,7 +56,7 @@ public final class BuilderSurfacePreviewPlanner {
         if (!BuilderInteractionPolicy.permitsScepter(Screen.hasShiftDown(), targetState)) {
             // Interaction-priority targets hide a previous surface preview immediately. The
             // ordinary right-click path is then free to reach the block itself.
-            if (workflow != null) BuilderPreviewState.get().clear();
+            BuilderPreviewState.get().clearSurfacePreview();
             reset();
             return;
         }
@@ -70,15 +71,10 @@ public final class BuilderSurfacePreviewPlanner {
                 && !hasPreviewDrift(minecraft.level, key)) return;
 
         List<BuilderPreviewState.Cell> cells = plan(minecraft.level, hit, settings, override);
-        BuilderPreviewState.Selection empty = new BuilderPreviewState.Selection(minecraft.level.dimension(),
-                null, null);
-        int revision = workflow == null ? 1 : workflow.revision() + 1;
-        BuilderPreviewState.Snapshot planned = new BuilderPreviewState.Snapshot(
-                minecraft.level.dimension(), cells, empty, null, false, false, revision);
-        BuilderPreviewState.get().accept(planned);
+        BuilderPreviewState.get().updateSurfacePreview(minecraft.level.dimension(), cells);
         lastKey = key;
         showingSurfacePreview = true;
-        lastPlannedSnapshot = planned;
+        lastPlannedSnapshot = BuilderPreviewState.get().snapshot();
         lastCells = cells;
         validationCursor = 0;
         lastFace = hit.getDirection();

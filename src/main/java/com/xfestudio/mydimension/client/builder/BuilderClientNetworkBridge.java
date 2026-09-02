@@ -193,20 +193,16 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
                 .map(cell -> new BuilderPreviewState.Cell(cell.pos(), cell.state(),
                         BuilderPreviewState.Kind.valueOf(cell.kind().name()), cell.ghost()))
                 .toList();
-        BuilderPreviewState.Snapshot current = BuilderPreviewState.get().snapshot();
-        BuilderPreviewState.Selection selection = BuilderPreviewState.mergeSelection(
-                dimension, packet.first(), packet.second(), current);
-        boolean cancelable = BuilderPreviewState.mergeCancelable(packet.cancelable(),
-                packet.blueprintPreview(), selection);
-        BuilderPreviewState.Snapshot incoming = new BuilderPreviewState.Snapshot(
-                dimension, cells, selection, packet.activeJobId(), packet.blueprintPreview(),
-                cancelable, packet.revision());
-        boolean emptyServerWorkflow = packet.cells().isEmpty() && packet.first() == null
-                && packet.second() == null && packet.activeJobId() == null
-                && !packet.blueprintPreview() && !packet.cancelable();
-        BuilderPreviewState.Snapshot merged = BuilderPreviewState.mergeServerSnapshot(
-                current, incoming, emptyServerWorkflow);
-        if (merged != current) BuilderPreviewState.get().accept(merged);
+        BuilderPreviewState state = BuilderPreviewState.get();
+        BuilderPreviewState.Snapshot current = state.snapshot();
+        UUID currentJobId = current == null ? null : current.activeJobId();
+        // Pending blueprint work is moved from SavedData into the active worker before this
+        // preview packet is built. The paired lightweight snapshot still carries its transaction
+        // id, so that brief empty packet is not a real completion and must not erase yellow cells.
+        boolean preserveTransientEmpty = cells.isEmpty() && packet.activeJobId() == null
+                && currentJobId != null && currentJobId.equals(snapshot.activeJobId());
+        state.updateMissingPreview(dimension, cells, packet.activeJobId(), packet.cancelable(),
+                packet.revision(), preserveTransientEmpty);
     }
 
     @Override
@@ -237,10 +233,11 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
             selection = new BuilderPreviewState.Selection(dimension, target.blockPos(), null);
             ModNetwork.CHANNEL.sendToServer(new BlueprintSelectionStartPacket(target.blockPos()));
         }
-        int revision = current == null ? 1 : current.revision() + 1;
         boolean complete = selection.first() != null && selection.second() != null;
-        BuilderPreviewState.get().accept(new BuilderPreviewState.Snapshot(dimension, List.of(), selection,
-                null, complete, true, revision));
+        // Completing a source cuboid does not itself create a movable deployment. That only becomes
+        // active after the validated capture download is available and refreshBlueprintPreview()
+        // has built its destination cells.
+        BuilderPreviewState.get().updateSelection(selection);
         if (complete) {
             requestSelectionCopy();
         }
@@ -530,10 +527,8 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
             anchor = hit.getBlockPos().relative(hit.getDirection()).offset(offset);
         }
         blueprintTargetMissTicks = 0;
-        BuilderPreviewState.Snapshot currentPreview = BuilderPreviewState.get().snapshot();
-        boolean currentGenerationIntact = currentPreview != null
-                && currentPreview.blueprintPreview()
-                && currentPreview.cells().size() == selectedBlueprint.blocks().size();
+        boolean currentGenerationIntact = BuilderPreviewState.get()
+                .hasCompleteDeploymentGeneration(selectedBlueprint.blocks().size());
         if (!force && anchor.equals(lastPreviewAnchor) && currentGenerationIntact) return;
         lastPreviewAnchor = anchor;
         BlueprintPlacementPlan plan = BlueprintPlacementPlan.create(selectedBlueprint, transform, anchor);
@@ -548,23 +543,11 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
             return new BuilderPreviewState.Cell(block.worldPos(), block.state(), kind,
                     kind == BuilderPreviewState.Kind.BUILD);
         }).toList();
-        BuilderPreviewState.Snapshot old = BuilderPreviewState.get().snapshot();
-        int revision = old == null ? 1 : old.revision() + 1;
-        BuilderPreviewState.Selection selection = old == null
-                ? new BuilderPreviewState.Selection(minecraft.level.dimension(), null, null) : old.selection();
-        BuilderPreviewState.get().accept(new BuilderPreviewState.Snapshot(minecraft.level.dimension(), cells,
-                selection, null, true, true, revision));
+        BuilderPreviewState.get().updateDeploymentPreview(minecraft.level.dimension(), cells);
     }
 
     private static void clearBlueprintCells(Minecraft minecraft) {
-        BuilderPreviewState.Snapshot old = BuilderPreviewState.get().snapshot();
-        BuilderPreviewState.Selection selection = old == null
-                ? new BuilderPreviewState.Selection(minecraft.level.dimension(), null, null)
-                : old.selection();
-        int revision = old == null ? 1 : old.revision() + 1;
-        BuilderPreviewState.get().accept(new BuilderPreviewState.Snapshot(
-                minecraft.level.dimension(), List.of(), selection, null,
-                true, true, revision));
+        BuilderPreviewState.get().updateDeploymentPreview(minecraft.level.dimension(), List.of());
     }
 
     private void placeBlueprint(BuilderClientCommand.Target target) {
