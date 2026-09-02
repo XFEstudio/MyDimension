@@ -13,6 +13,7 @@ import com.xfestudio.mydimension.builder.ResonantAnchorTarget;
 import com.xfestudio.mydimension.builder.SurfaceMatchMode;
 import com.xfestudio.mydimension.builder.anchor.AnchorBindings;
 import com.xfestudio.mydimension.builder.blueprint.BlueprintServerService;
+import com.xfestudio.mydimension.builder.history.BuilderTransaction;
 import com.xfestudio.mydimension.config.BuilderConfig;
 import com.xfestudio.mydimension.network.ModNetwork;
 import com.xfestudio.mydimension.registry.ModItems;
@@ -226,6 +227,15 @@ public final class BuilderCommandPacket {
             return;
         }
 
+        if (packet.action == Action.RESUME) {
+            // A blueprint resume moves the durable waiting task into the tick-driven task manager.
+            // Publishing here would therefore observe the intentional hand-off gap and send an empty
+            // missing-material preview. The task manager publishes once it reaches a terminal or
+            // paused state; ordinary surface resumes remain synchronous and publish below.
+            resume(player, scepter, packet.id);
+            return;
+        }
+
         switch (packet.action) {
             case SET_MODE -> RealmwrightData.setMode(scepter, packet.mode);
             case SET_MATCH -> RealmwrightData.setMatchMode(scepter, packet.match);
@@ -237,7 +247,7 @@ public final class BuilderCommandPacket {
             }
             case SET_HISTORY_RECORDING -> RealmwrightData.setRecordsHistory(scepter, packet.first != 0);
             case USE -> { }
-            case RESUME -> resume(player, scepter, packet.id);
+            case RESUME -> { }
             case CANCEL -> cancel(player, scepter, packet.id);
             case CANCEL_BLUEPRINT -> cancelBlueprint(player, scepter);
             case UNDO -> {
@@ -312,12 +322,24 @@ public final class BuilderCommandPacket {
         if (pending == null) {
             player.displayClientMessage(Component.translatable(
                     "message.mydimension.builder.no_pending_task"), true);
+            // Clear a genuinely stale client-side yellow preview. The deferred blueprint branch
+            // below is used only after a matching task has successfully entered the active manager.
+            BuilderNetworkBridge.sync(player);
             return;
         }
         BuilderOperationManager.Result result = BuilderOperationManager.resumePending(player, scepter);
         if (!result.accepted() && result.rejectionKey() != null) {
             player.displayClientMessage(Component.translatable(result.rejectionKey()), true);
         }
+        if (!defersResumeSynchronization(pending.type(), result.accepted())) {
+            BuilderNetworkBridge.sync(player);
+        }
+    }
+
+    /** Blueprint execution finishes asynchronously; every other resume has its final state now. */
+    static boolean defersResumeSynchronization(BuilderTransaction.Type type, boolean accepted) {
+        return accepted
+                && type == BuilderTransaction.Type.BLUEPRINT;
     }
 
     private static void cancel(ServerPlayer player, ItemStack scepter, @Nullable UUID requestedJob) {

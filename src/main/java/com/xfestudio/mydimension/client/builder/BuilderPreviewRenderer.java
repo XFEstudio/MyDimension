@@ -268,7 +268,8 @@ public final class BuilderPreviewRenderer {
             }
         }
 
-        BuilderPreviewState.Selection selection = snapshot == null ? null : snapshot.selection();
+        BuilderPreviewState.Selection selection = snapshot == null || snapshot.blueprintPreview()
+                ? null : snapshot.selection();
         if (selection != null && selection.active()) {
             if (selection.first() != null) {
                 AABB bounds = new AABB(selection.first()).inflate(0.006D);
@@ -294,6 +295,8 @@ public final class BuilderPreviewRenderer {
             }
         }
 
+        // Follow the same fully published generation as the cached cell VBOs. Reading the newest
+        // state here would move the outer frame before its replacement geometry is ready.
         AABB blueprintBounds = blueprintBounds(snapshot);
         if (blueprintBounds != null && withinDistance(blueprintBounds, camera, maximumDistanceSqr)) {
             BuilderPreviewGeometry.emitBox(pose, quads, blueprintBounds.inflate(0.004D),
@@ -340,6 +343,8 @@ public final class BuilderPreviewRenderer {
         int maxY = Integer.MIN_VALUE;
         int maxZ = Integer.MIN_VALUE;
         for (BuilderPreviewState.Cell cell : snapshot.cells()) {
+            // Retained missing work never belongs to the deployment focus/frame volume.
+            if (cell.kind() == BuilderPreviewState.Kind.MISSING) continue;
             minX = Math.min(minX, cell.pos().getX());
             minY = Math.min(minY, cell.pos().getY());
             minZ = Math.min(minZ, cell.pos().getZ());
@@ -347,7 +352,8 @@ public final class BuilderPreviewRenderer {
             maxY = Math.max(maxY, cell.pos().getY());
             maxZ = Math.max(maxZ, cell.pos().getZ());
         }
-        return new AABB(minX, minY, minZ, maxX + 1.0D, maxY + 1.0D, maxZ + 1.0D);
+        return minX == Integer.MAX_VALUE ? null
+                : new AABB(minX, minY, minZ, maxX + 1.0D, maxY + 1.0D, maxZ + 1.0D);
     }
 
     private static int previewDistance(Minecraft minecraft) {

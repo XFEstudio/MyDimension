@@ -133,7 +133,6 @@ public final class BuilderClientEvents {
             if (cancelTarget == null) return;
             switch (cancelTarget) {
                 case DEPLOYMENT -> {
-                    BuilderClientServices.send(new BuilderClientCommand.CancelBlueprint());
                     BuilderClientNetworkBridge.cancelPlacementPreview();
                 }
                 case SELECTION -> BuilderClientNetworkBridge.cancelSourceSelection();
