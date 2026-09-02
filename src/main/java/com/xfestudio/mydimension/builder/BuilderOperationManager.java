@@ -269,7 +269,8 @@ public final class BuilderOperationManager {
                                    Map<BlockPos, net.minecraft.nbt.CompoundTag> blockEntityTags,
                                    boolean captureHistory) {
         ServerLevel level = player.serverLevel();
-        Execution result = new Execution(player.getOffhandItem().copy(), captureHistory);
+        Execution result = new Execution(player.getOffhandItem().copy(), captureHistory,
+                OperationSoundKind.PLACE);
         List<BuildAttempt> attempts = new ArrayList<>();
         ItemStack placementSource = player.getOffhandItem().copy();
         boolean free = isFree(player);
@@ -706,7 +707,8 @@ public final class BuilderOperationManager {
                                       List<SurfacePlanner.Candidate> candidates, UUID transactionId,
                                       boolean captureHistory) {
         ServerLevel level = player.serverLevel();
-        Execution result = new Execution(player.getOffhandItem().copy(), captureHistory);
+        Execution result = new Execution(player.getOffhandItem().copy(), captureHistory,
+                OperationSoundKind.BREAK);
         List<PositionedDrop> deferredDrops = captureHistory ? List.of() : new ArrayList<>();
         try {
             for (SurfacePlanner.Candidate candidate : candidates) {
@@ -1359,13 +1361,22 @@ public final class BuilderOperationManager {
         try {
             var soundType = operationSound.state.getSoundType(
                     player.serverLevel(), operationSound.pos, player);
-            player.serverLevel().playSound(null, operationSound.pos, soundType.getBreakSound(),
+            player.serverLevel().playSound(null, operationSound.pos,
+                    selectOperationSound(soundType.getPlaceSound(), soundType.getBreakSound(),
+                            operationSound.kind),
                     SoundSource.BLOCKS, (soundType.getVolume() + 1.0F) * 0.5F,
                     soundType.getPitch() * 0.8F);
         } catch (Throwable throwable) {
             MyDimension.LOGGER.warn("Builder could not play its batch sound at {}",
                     operationSound.pos, throwable);
         }
+    }
+
+    static <T> T selectOperationSound(T placeSound, T breakSound, OperationSoundKind kind) {
+        return switch (kind) {
+            case PLACE -> placeSound;
+            case BREAK -> breakSound;
+        };
     }
 
     public record Result(int changed, int missing, int blocked, boolean truncated, String rejectionKey,
@@ -1387,18 +1398,20 @@ public final class BuilderOperationManager {
                 new java.util.LinkedHashSet<>();
         private final ItemStack offhandBefore;
         private final boolean captureHistory;
+        private final OperationSoundKind soundKind;
         private ItemStack offhandAfter = ItemStack.EMPTY;
         private int changedCount;
         private int blocked;
         @javax.annotation.Nullable private OperationSound sound;
 
-        private Execution(ItemStack offhandBefore, boolean captureHistory) {
+        private Execution(ItemStack offhandBefore, boolean captureHistory, OperationSoundKind soundKind) {
             this.offhandBefore = offhandBefore;
             this.captureHistory = captureHistory;
+            this.soundKind = soundKind;
         }
 
         private void captureSound(BlockPos pos, BlockState state) {
-            if (sound == null) sound = new OperationSound(pos, state);
+            if (sound == null) sound = new OperationSound(pos, state, soundKind);
         }
     }
 
@@ -1406,10 +1419,15 @@ public final class BuilderOperationManager {
                                        boolean committed, @javax.annotation.Nullable OperationSound sound) {
     }
 
-    public record OperationSound(BlockPos pos, BlockState state) {
+    public record OperationSound(BlockPos pos, BlockState state, OperationSoundKind kind) {
         public OperationSound {
             pos = pos.immutable();
         }
+    }
+
+    public enum OperationSoundKind {
+        PLACE,
+        BREAK
     }
 
     record NeighborNotification(BlockPos target, BlockPos source) {

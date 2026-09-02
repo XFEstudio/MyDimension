@@ -51,6 +51,9 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
     @Nullable private UUID pendingCapture;
     @Nullable private UUID pendingSelectionCapture;
     @Nullable private UUID pendingPlacement;
+    @Nullable private BlueprintData cachedSelectionBlueprint;
+    @Nullable private UUID cachedSelectionToken;
+    private long cachedSelectionAtNanos;
     private BlueprintTransform transform = BlueprintTransform.NONE;
     private BlockPos offset = BlockPos.ZERO;
     @Nullable private BlockPos lastPreviewAnchor;
@@ -229,6 +232,8 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
             selection = new BuilderPreviewState.Selection(dimension,
                     current.selection().first(), target.blockPos());
         } else {
+            INSTANCE.clearCachedSelectionCopy();
+            INSTANCE.pendingSelectionCapture = null;
             selection = new BuilderPreviewState.Selection(dimension, target.blockPos(), null);
             ModNetwork.CHANNEL.sendToServer(new BlueprintSelectionStartPacket(target.blockPos()));
         }
@@ -237,11 +242,31 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
         BuilderPreviewState.get().accept(new BuilderPreviewState.Snapshot(dimension, List.of(), selection,
                 null, complete, true, revision));
         if (complete) {
-            UUID request = UUID.randomUUID();
-            INSTANCE.pendingSelectionCapture = request;
-            ModNetwork.CHANNEL.sendToServer(new BlueprintCaptureRequestPacket(request, selection.first(),
-                    selection.second(), BlueprintSaveMode.BLOCKS_ONLY, "Unsaved Selection", false));
+            requestSelectionCopy();
         }
+    }
+
+    /**
+     * Rebuilds a movable deployment preview from the persistent, server-validated source cuboid.
+     * This is also used by the wheel after a player cancels only the copied preview: the blue
+     * source selection remains intact and can therefore be copied again without reselecting it.
+     */
+    public static boolean requestSelectionCopy() {
+        BuilderPreviewState.Snapshot preview = BuilderPreviewState.get().snapshot();
+        if (preview == null || preview.selection() == null || !preview.selection().complete()
+                || INSTANCE.pendingSelectionCapture != null) return false;
+        // A source-selection capture supersedes any library upload that may still be in flight.
+        // Otherwise that late upload could pair this selection's BlueprintData with an unrelated
+        // cache token and make the visible preview differ from the eventual placement.
+        INSTANCE.selectedBlueprintId = null;
+        INSTANCE.pendingUpload = null;
+        if (INSTANCE.restoreFreshSelectionCopy()) return true;
+        UUID request = UUID.randomUUID();
+        INSTANCE.pendingSelectionCapture = request;
+        ModNetwork.CHANNEL.sendToServer(new BlueprintCaptureRequestPacket(request,
+                preview.selection().first(), preview.selection().second(), BlueprintSaveMode.BLOCKS_ONLY,
+                "Unsaved Selection", false));
+        return true;
     }
 
     public static boolean requestCapture(String name, BlueprintSaveMode mode) {
@@ -280,6 +305,7 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
         INSTANCE.pendingCapture = null;
         INSTANCE.pendingSelectionCapture = null;
         INSTANCE.pendingPlacement = null;
+        INSTANCE.clearCachedSelectionCopy();
         INSTANCE.lastPreviewAnchor = null;
         INSTANCE.previewDirty = false;
         INSTANCE.blueprintTargetMissTicks = 0;
@@ -313,6 +339,7 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
     public static void cancelSourceSelection() {
         ModNetwork.CHANNEL.sendToServer(new BlueprintSelectionCancelPacket());
         INSTANCE.pendingSelectionCapture = null;
+        INSTANCE.clearCachedSelectionCopy();
         BuilderPreviewState.get().clearSelection();
     }
 
@@ -371,8 +398,11 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
                     BLUEPRINT_TRANSFERS.takeDownload(selectionId);
             if (download.isPresent()) {
                 pendingSelectionCapture = null;
-                selectedBlueprint = download.get().blueprint();
-                blueprintToken = download.get().cacheToken();
+                cachedSelectionBlueprint = download.get().blueprint();
+                cachedSelectionToken = download.get().cacheToken();
+                cachedSelectionAtNanos = System.nanoTime();
+                selectedBlueprint = cachedSelectionBlueprint;
+                blueprintToken = cachedSelectionToken;
                 transform = BlueprintTransform.NONE;
                 offset = BlockPos.ZERO;
                 lastPreviewAnchor = null;
@@ -392,6 +422,34 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
         }
     }
 
+    /**
+     * Covers the brief interval in which the server's anti-spam capture cooldown is still active.
+     * A just-cancelled deployment can be restored locally from the capture that produced it; after
+     * two seconds we recapture normally so later source-world edits and cache eviction are respected.
+     */
+    private boolean restoreFreshSelectionCopy() {
+        long age = System.nanoTime() - cachedSelectionAtNanos;
+        if (cachedSelectionBlueprint == null || cachedSelectionToken == null
+                || cachedSelectionAtNanos == 0L || age < 0L || age > 2_000_000_000L) {
+            clearCachedSelectionCopy();
+            return false;
+        }
+        selectedBlueprint = cachedSelectionBlueprint;
+        blueprintToken = cachedSelectionToken;
+        transform = BlueprintTransform.NONE;
+        offset = BlockPos.ZERO;
+        lastPreviewAnchor = null;
+        blueprintTargetMissTicks = 0;
+        previewDirty = true;
+        return true;
+    }
+
+    private void clearCachedSelectionCopy() {
+        cachedSelectionBlueprint = null;
+        cachedSelectionToken = null;
+        cachedSelectionAtNanos = 0L;
+    }
+
     private static void showBlueprintMessage(String message) {
         Minecraft minecraft = Minecraft.getInstance();
         if (minecraft.player != null && message != null && !message.isBlank()) {
@@ -400,6 +458,10 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
     }
 
     private void executeBlueprintAction(BlueprintAltActionController.Action action) {
+        if (action == BlueprintAltActionController.Action.COPY_SELECTION) {
+            requestSelectionCopy();
+            return;
+        }
         if (action == BlueprintAltActionController.Action.SAVE) {
             BuilderPreviewState.Snapshot preview = BuilderPreviewState.get().snapshot();
             if (preview != null && preview.selection() != null && preview.selection().complete()) {

@@ -222,5 +222,6 @@
   "action.mydimension.realmwright.blueprint.offset_y": "Y 轴偏移",
   "action.mydimension.realmwright.blueprint.offset_z": "Z 轴偏移",
   "action.mydimension.realmwright.blueprint.reset": "重置变换",
+  "action.mydimension.realmwright.blueprint.copy_selection": "复制选区",
   "action.mydimension.realmwright.blueprint.save": "保存蓝图"
 }
