@@ -7,6 +7,7 @@ import com.xfestudio.mydimension.item.RiftItem;
 import com.xfestudio.mydimension.registry.ModEntities;
 import com.xfestudio.mydimension.registry.ModItems;
 import com.xfestudio.mydimension.network.ModNetwork;
+import com.xfestudio.mydimension.world.MindTimeController;
 import com.xfestudio.mydimension.world.ModDimensions;
 import com.xfestudio.mydimension.world.entity.RiftAnchorEntity;
 import net.minecraft.commands.CommandSourceStack;
@@ -33,6 +34,7 @@ import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.living.MobSpawnEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
+import net.minecraftforge.event.level.LevelEvent;
 import net.minecraftforge.event.level.SleepFinishedTimeEvent;
 import net.minecraftforge.eventbus.api.Event;
 import net.minecraftforge.eventbus.api.EventPriority;
@@ -101,8 +103,23 @@ public class MyDimensionEvents {
         }
     }
 
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public void attachIndependentMindTime(LevelEvent.Load event) {
+        if (event.getLevel() instanceof ServerLevel level && ModDimensions.isMindDimension(level.dimension())) {
+            MindTimeController.attach(level);
+        }
+    }
+
     @SubscribeEvent
-    public void finishSleepInEtherealMind(SleepFinishedTimeEvent event) {
+    public void advanceIndependentMindTime(TickEvent.LevelTickEvent event) {
+        if (event.phase == TickEvent.Phase.END && event.level instanceof ServerLevel level
+                && ModDimensions.isMindDimension(level.dimension())) {
+            MindTimeController.tick(level);
+        }
+    }
+
+    @SubscribeEvent(priority = EventPriority.LOWEST)
+    public void finishSleepInMind(SleepFinishedTimeEvent event) {
         if (!(event.getLevel() instanceof ServerLevel level) || !ModDimensions.isMindDimension(level.dimension())) {
             return;
         }
