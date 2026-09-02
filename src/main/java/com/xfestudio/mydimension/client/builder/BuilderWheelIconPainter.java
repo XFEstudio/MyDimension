@@ -28,6 +28,7 @@ final class BuilderWheelIconPainter {
             case OFFSET_Y -> drawOffset(graphics, Axis.Y, color, accentColor);
             case OFFSET_Z -> drawOffset(graphics, Axis.Z, color, accentColor);
             case RESET -> drawReset(graphics, color, accentColor);
+            case COPY_SELECTION -> drawCopySelection(graphics, color, accentColor);
             case SAVE -> drawSave(graphics, color, accentColor);
         }
         graphics.pose().popPose();
@@ -98,6 +99,16 @@ final class BuilderWheelIconPainter {
         line(graphics, 5, 2, 2, 5, color);
         line(graphics, 2, 5, -2, 5, color);
         line(graphics, -2, 5, -4, 3, color);
+    }
+
+    /** Two overlapping selection frames with a small transfer arrow. */
+    private static void drawCopySelection(GuiGraphics graphics, int color, int accentColor) {
+        outline(graphics, -5, -5, 2, 2, accentColor);
+        outline(graphics, -2, -2, 5, 5, color);
+
+        line(graphics, -4, 5, 0, 5, accentColor);
+        line(graphics, 0, 5, -2, 3, accentColor);
+        line(graphics, 0, 5, -2, 6, accentColor);
     }
 
     /** Classic floppy-disk silhouette without relying on a texture atlas. */

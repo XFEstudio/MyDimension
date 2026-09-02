@@ -116,7 +116,7 @@ public final class BuilderHudRenderer {
             drawChevron(graphics, centerX + innerRadius - 7, centerY - 2, true, 0xFF73EAD7);
         }
 
-        // Nine dots preserve position feedback without reintroducing textual page numbers.
+        // One dot per action preserves position feedback without textual page numbers.
         int indicatorY = centerY + innerRadius - 9;
         int indicatorSpacing = 3;
         int indicatorStart = centerX - (actions.size() - 1) * indicatorSpacing / 2;
