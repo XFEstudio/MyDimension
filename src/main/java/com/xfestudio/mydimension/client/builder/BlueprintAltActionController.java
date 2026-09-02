@@ -18,6 +18,7 @@ public final class BlueprintAltActionController {
         OFFSET_Y(true),
         OFFSET_Z(true),
         RESET(false),
+        COPY_SELECTION(false),
         SAVE(false);
 
         private final boolean repeatable;

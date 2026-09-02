@@ -11,11 +11,15 @@ import com.xfestudio.mydimension.builder.blueprint.BlueprintSaveMode;
 import com.xfestudio.mydimension.builder.blueprint.BlueprintTransform;
 import com.xfestudio.mydimension.builder.history.BuilderTransaction;
 import com.xfestudio.mydimension.builder.history.WorldDelta;
+import com.xfestudio.mydimension.registry.ModItems;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.sounds.SoundSource;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.Container;
 import net.minecraft.world.entity.item.ItemEntity;
@@ -28,13 +32,19 @@ import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.block.piston.PistonMovingBlockEntity;
 import net.minecraft.world.level.material.Fluids;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.common.util.FakePlayerFactory;
+import net.minecraftforge.event.PlayLevelSoundEvent;
 import net.minecraftforge.event.level.BlockEvent;
 import net.minecraftforge.eventbus.api.EventPriority;
 import net.minecraftforge.gametest.GameTestHolder;
 import net.minecraftforge.gametest.PrefixGameTestTemplate;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
@@ -393,6 +403,67 @@ public final class BuilderGameTests {
         helper.assertTrue(helper.getLevel().getBlockEntity(settling) instanceof PistonMovingBlockEntity,
                 "History stabilization removed an unknown block entity");
         helper.succeed();
+    }
+
+    @GameTest(template = "empty")
+    public static void surfaceBatchesUseOneModeSpecificBlockSound(GameTestHelper helper) {
+        BlockPos firstBase = helper.absolutePos(new BlockPos(1, 1, 1));
+        BlockPos secondBase = firstBase.east();
+        BlockPos firstTarget = firstBase.above();
+        BlockPos secondTarget = secondBase.above();
+        helper.getLevel().setBlock(firstBase, Blocks.STONE.defaultBlockState(), Block.UPDATE_ALL);
+        helper.getLevel().setBlock(secondBase, Blocks.STONE.defaultBlockState(), Block.UPDATE_ALL);
+
+        ServerPlayer player = FakePlayerFactory.get(helper.getLevel(),
+                new GameProfile(UUID.randomUUID(), "builder-sound-test-player"));
+        ItemStack scepter = new ItemStack(ModItems.REALMWRIGHT_SCEPTER.get());
+        player.setItemInHand(InteractionHand.MAIN_HAND, scepter);
+        RealmwrightData.setBuildLimit(scepter, 2, BuilderRuntime.settings().maxBuildLimit());
+        RealmwrightData.setDemolishLimit(scepter, 2, BuilderRuntime.settings().maxDemolishLimit());
+
+        Set<BlockPos> soundPositions = Set.of(firstTarget, secondTarget);
+        List<SoundEvent> sounds = new ArrayList<>();
+        Consumer<PlayLevelSoundEvent.AtPosition> listener = event -> {
+            if (event.getLevel() == helper.getLevel()
+                    && event.getSource() == SoundSource.BLOCKS
+                    && soundPositions.contains(BlockPos.containing(event.getPosition()))) {
+                sounds.add(event.getSound().value());
+            }
+        };
+
+        try {
+            MinecraftForge.EVENT_BUS.addListener(EventPriority.NORMAL, false,
+                    PlayLevelSoundEvent.AtPosition.class, listener);
+
+            player.setItemInHand(InteractionHand.OFF_HAND, new ItemStack(Items.STONE, 2));
+            BlockHitResult buildHit = new BlockHitResult(Vec3.atCenterOf(firstBase).add(0.0D, 0.5D, 0.0D),
+                    Direction.UP, firstBase, false);
+            BuilderOperationManager.Result build = BuilderOperationManager.executeValidatedSurface(
+                    player, scepter, buildHit);
+            helper.assertTrue(build.changed() == 2,
+                    "Two-block build changed " + build.changed() + " blocks instead of two");
+            helper.assertTrue(sounds.equals(List.of(Blocks.STONE.defaultBlockState().getSoundType(
+                            helper.getLevel(), firstTarget, player).getPlaceSound())),
+                    "Two-block build did not emit exactly one stone placement sound: " + sounds);
+
+            sounds.clear();
+            RealmwrightData.setMode(scepter, BuilderMode.DEMOLISH);
+            player.setItemInHand(InteractionHand.OFF_HAND, new ItemStack(Items.DIAMOND_PICKAXE));
+            BlockHitResult demolishHit = new BlockHitResult(Vec3.atCenterOf(firstTarget).add(0.0D, 0.5D, 0.0D),
+                    Direction.UP, firstTarget, false);
+            BuilderOperationManager.Result demolish = BuilderOperationManager.executeValidatedSurface(
+                    player, scepter, demolishHit);
+            helper.assertTrue(demolish.changed() == 2,
+                    "Two-block demolition changed " + demolish.changed() + " blocks instead of two");
+            helper.assertTrue(sounds.equals(List.of(Blocks.STONE.defaultBlockState().getSoundType(
+                            helper.getLevel(), firstTarget, player).getBreakSound())),
+                    "Two-block demolition did not emit exactly one stone break sound: " + sounds);
+            helper.succeed();
+        } catch (RuntimeException exception) {
+            helper.fail(exception.getMessage());
+        } finally {
+            MinecraftForge.EVENT_BUS.unregister(listener);
+        }
     }
 
     private record TestPlacement(BlockPos pos, BlockState state) {

@@ -221,5 +221,6 @@
   "action.mydimension.realmwright.blueprint.offset_y": "Offset Y",
   "action.mydimension.realmwright.blueprint.offset_z": "Offset Z",
   "action.mydimension.realmwright.blueprint.reset": "Reset transform",
+  "action.mydimension.realmwright.blueprint.copy_selection": "Copy selection",
   "action.mydimension.realmwright.blueprint.save": "Save blueprint"
 }
