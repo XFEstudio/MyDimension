@@ -26,7 +26,7 @@ import java.util.function.Supplier;
 
 /** Server-owned state consumed by the five-tab Realmwright screen and HUD. */
 public record BuilderSnapshotPacket(boolean enabled, BuilderMode mode, SurfaceMatchMode surfaceMatch,
-                                    boolean historyRecording,
+                                    boolean historyRecording, boolean allowReplacement,
                                     int buildLimit, int demolishLimit,
                                     int maximumBuildLimit, int maximumDemolishLimit,
                                     int reach, String status, @Nullable UUID activeJobId,
@@ -75,6 +75,7 @@ public record BuilderSnapshotPacket(boolean enabled, BuilderMode mode, SurfaceMa
                 RealmwrightData.mode(scepter),
                 RealmwrightData.matchMode(scepter),
                 RealmwrightData.recordsHistory(scepter),
+                RealmwrightData.allowsReplacement(scepter),
                 RealmwrightData.buildLimit(scepter, settings.maxBuildLimit()),
                 RealmwrightData.demolishLimit(scepter, settings.maxDemolishLimit()),
                 settings.maxBuildLimit(),
@@ -148,6 +149,7 @@ public record BuilderSnapshotPacket(boolean enabled, BuilderMode mode, SurfaceMa
         buffer.writeEnum(packet.mode);
         buffer.writeEnum(packet.surfaceMatch);
         buffer.writeBoolean(packet.historyRecording);
+        buffer.writeBoolean(packet.allowReplacement);
         buffer.writeVarInt(packet.buildLimit);
         buffer.writeVarInt(packet.demolishLimit);
         buffer.writeVarInt(packet.maximumBuildLimit);
@@ -187,6 +189,7 @@ public record BuilderSnapshotPacket(boolean enabled, BuilderMode mode, SurfaceMa
         BuilderMode mode = buffer.readEnum(BuilderMode.class);
         SurfaceMatchMode match = buffer.readEnum(SurfaceMatchMode.class);
         boolean historyRecording = buffer.readBoolean();
+        boolean allowReplacement = buffer.readBoolean();
         int buildLimit = buffer.readVarInt();
         int demolishLimit = buffer.readVarInt();
         int maximumBuildLimit = buffer.readVarInt();
@@ -213,7 +216,8 @@ public record BuilderSnapshotPacket(boolean enabled, BuilderMode mode, SurfaceMa
             history.add(new History(buffer.readUUID(), buffer.readUtf(128), buffer.readUtf(128),
                     buffer.readVarInt(), buffer.readLong(), buffer.readEnum(HistoryStatus.class)));
         }
-        return new BuilderSnapshotPacket(enabled, mode, match, historyRecording, buildLimit, demolishLimit,
+        return new BuilderSnapshotPacket(enabled, mode, match, historyRecording, allowReplacement,
+                buildLimit, demolishLimit,
                 maximumBuildLimit, maximumDemolishLimit, reach, status, activeJobId,
                 completedBlocks, totalBlocks, canUndo, canRedo, anchors, history);
     }

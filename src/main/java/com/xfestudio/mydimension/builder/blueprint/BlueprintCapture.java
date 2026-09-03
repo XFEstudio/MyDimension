@@ -1,6 +1,5 @@
 package com.xfestudio.mydimension.builder.blueprint;
 
-import com.xfestudio.mydimension.config.BuilderConfig;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
@@ -12,8 +11,10 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.UUID;
 
@@ -31,21 +32,15 @@ public final class BlueprintCapture {
         int sizeX = max.getX() - min.getX() + 1;
         int sizeY = max.getY() - min.getY() + 1;
         int sizeZ = max.getZ() - min.getZ() + 1;
-        long volume = (long) sizeX * sizeY * sizeZ;
-        int maxAxis = Math.min(BlueprintLimits.MAX_AXIS, BuilderConfig.MAX_BLUEPRINT_AXIS.get());
-        int maxVolume = Math.min(BlueprintLimits.MAX_VOLUME, BuilderConfig.MAX_BLUEPRINT_VOLUME.get());
-        if (sizeX > maxAxis || sizeY > maxAxis || sizeZ > maxAxis || volume > maxVolume) {
-            throw new IllegalArgumentException("Selection exceeds the blueprint size limit");
-        }
         requireLoaded(level, min, max);
 
         List<CapturedBlock> captured = new ArrayList<>();
         Set<BlockState> paletteSet = new HashSet<>();
         int blockEntityBytes = 0;
-        for (BlockPos mutable : BlockPos.betweenClosed(min, max)) {
-            BlockPos worldPos = mutable.immutable();
-            BlockState state = level.getBlockState(worldPos);
+        for (BlockPos cursor : positionsBetweenClosed(min, max)) {
+            BlockState state = level.getBlockState(cursor);
             if (state.isAir()) continue;
+            BlockPos worldPos = cursor.immutable();
             CompoundTag blockEntityTag = null;
             if (mode == BlueprintSaveMode.FULL) {
                 BlockEntity blockEntity = level.getBlockEntity(worldPos);
@@ -66,9 +61,6 @@ public final class BlueprintCapture {
             }
             paletteSet.add(state);
             captured.add(new CapturedBlock(worldPos.subtract(min), state, blockEntityTag));
-            if (captured.size() > Math.min(BlueprintLimits.MAX_BLOCKS, BuilderConfig.MAX_BLUEPRINT_BLOCKS.get())) {
-                throw new IllegalArgumentException("Selection contains too many non-air blocks");
-            }
         }
 
         List<BlockState> palette = paletteSet.stream()
@@ -94,13 +86,66 @@ public final class BlueprintCapture {
         int maxChunkX = max.getX() >> 4;
         int minChunkZ = min.getZ() >> 4;
         int maxChunkZ = max.getZ() >> 4;
-        for (int x = minChunkX; x <= maxChunkX; x++) {
-            for (int z = minChunkZ; z <= maxChunkZ; z++) {
+        for (int x = minChunkX; ; x++) {
+            for (int z = minChunkZ; ; z++) {
                 if (!level.getChunkSource().hasChunk(x, z)) {
                     throw new IllegalArgumentException("Every source chunk must already be loaded");
                 }
+                if (z == maxChunkZ) break;
             }
+            if (x == maxChunkX) break;
         }
+    }
+
+    /**
+     * Overflow-safe replacement for {@link BlockPos#betweenClosed(BlockPos, BlockPos)}. The vanilla
+     * iterator stores {@code sizeX * sizeY * sizeZ} in an int, so selections whose volume is a
+     * multiple of 2^32 can appear empty and other large selections can run past their bounds.
+     */
+    static Iterable<BlockPos> positionsBetweenClosed(BlockPos min, BlockPos max) {
+        if (min.getX() > max.getX() || min.getY() > max.getY() || min.getZ() > max.getZ()) {
+            throw new IllegalArgumentException("Minimum selection corner must not exceed maximum corner");
+        }
+        BlockPos immutableMin = min.immutable();
+        BlockPos immutableMax = max.immutable();
+        return () -> new Iterator<>() {
+            private final BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+            private int nextX = immutableMin.getX();
+            private int nextY = immutableMin.getY();
+            private int nextZ = immutableMin.getZ();
+            private boolean available = true;
+
+            @Override
+            public boolean hasNext() {
+                return available;
+            }
+
+            @Override
+            public BlockPos next() {
+                if (!available) throw new NoSuchElementException();
+                cursor.set(nextX, nextY, nextZ);
+                advance();
+                return cursor;
+            }
+
+            private void advance() {
+                if (nextX != immutableMax.getX()) {
+                    nextX++;
+                    return;
+                }
+                nextX = immutableMin.getX();
+                if (nextY != immutableMax.getY()) {
+                    nextY++;
+                    return;
+                }
+                nextY = immutableMin.getY();
+                if (nextZ != immutableMax.getZ()) {
+                    nextZ++;
+                    return;
+                }
+                available = false;
+            }
+        };
     }
 
     private static String stateKey(BlockState state) {

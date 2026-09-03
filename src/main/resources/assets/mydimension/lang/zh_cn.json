@@ -183,6 +183,8 @@
   "screen.mydimension.realmwright.history.empty": "这把权杖尚无事务历史。",
   "screen.mydimension.realmwright.history_recording.on": "历史记录：开启",
   "screen.mydimension.realmwright.history_recording.off": "历史记录：关闭（更流畅）",
+  "screen.mydimension.realmwright.allow_replacement.on": "替换阻挡方块：允许",
+  "screen.mydimension.realmwright.allow_replacement.off": "替换阻挡方块：禁止",
   "screen.mydimension.realmwright.disabled": "筑境功能已被服务端关闭；本地蓝图库仍可管理。",
   "screen.mydimension.realmwright.reach": "方块交互距离：%s 格",
   "screen.mydimension.realmwright.controls": "打开按键设置",

@@ -182,6 +182,8 @@
   "screen.mydimension.realmwright.history.empty": "This scepter has no transaction history.",
   "screen.mydimension.realmwright.history_recording.on": "History: On",
   "screen.mydimension.realmwright.history_recording.off": "History: Off (faster)",
+  "screen.mydimension.realmwright.allow_replacement.on": "Replace obstacles: On",
+  "screen.mydimension.realmwright.allow_replacement.off": "Replace obstacles: Off",
   "screen.mydimension.realmwright.disabled": "The server disabled building; the local blueprint library remains available.",
   "screen.mydimension.realmwright.reach": "Block reach: %s blocks",
   "screen.mydimension.realmwright.controls": "Open key bindings",

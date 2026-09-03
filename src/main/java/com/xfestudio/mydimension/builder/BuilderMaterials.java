@@ -202,13 +202,25 @@ public final class BuilderMaterials {
 
     public static boolean canAndRemove(ServerPlayer player, ItemStack scepter, List<ItemStack> values,
                                        List<ItemEntity> transactionEntities) {
+        return canAndRemove(player, scepter, values, transactionEntities, false);
+    }
+
+    /** Build replacement credits may occupy the offhand and therefore participate in exact reclaim. */
+    public static boolean canAndRemoveIncludingOffhand(ServerPlayer player, ItemStack scepter,
+                                                       List<ItemStack> values,
+                                                       List<ItemEntity> transactionEntities) {
+        return canAndRemove(player, scepter, values, transactionEntities, true);
+    }
+
+    private static boolean canAndRemove(ServerPlayer player, ItemStack scepter, List<ItemStack> values,
+                                        List<ItemEntity> transactionEntities, boolean allowOffhand) {
         List<ItemStack> required = merge(values);
         List<ItemStack> removed = new ArrayList<>();
         List<EntityDebit> entityDebits = new ArrayList<>();
         for (ItemStack wanted : required) {
             // The offhand is separately fingerprinted and restored as tool state; accepting it as a drop
             // debit would let undo consume the tool and then recreate it from offhandBefore.
-            Extraction extraction = extract(player, scepter, wanted, wanted.getCount(), false);
+            Extraction extraction = extract(player, scepter, wanted, wanted.getCount(), allowOffhand);
             removed.addAll(extraction.stacks());
             int remaining = wanted.getCount() - extraction.count();
             for (ItemEntity entity : transactionEntities) {
@@ -223,7 +235,7 @@ public final class BuilderMaterials {
             }
             if (remaining > 0) {
                 // Roll back every debit before reporting the transaction conflict.
-                List<ItemStack> overflow = insert(player, scepter, removed, false);
+                List<ItemStack> overflow = insert(player, scepter, removed, allowOffhand);
                 for (ItemStack stack : overflow) player.drop(stack, false);
                 return false;
             }

@@ -18,8 +18,9 @@ public final class RealmwrightData {
     private static final String BUILD_LIMIT = "BuildLimit";
     private static final String DEMOLISH_LIMIT = "DemolishLimit";
     private static final String RECORD_HISTORY = "RecordHistory";
+    private static final String ALLOW_REPLACEMENT = "AllowReplace";
     private static final String ANCHORS = "Anchors";
-    private static final int DATA_VERSION = 2;
+    private static final int DATA_VERSION = 3;
 
     public static final int DEFAULT_BUILD_LIMIT = 256;
     public static final int DEFAULT_DEMOLISH_LIMIT = 64;
@@ -106,6 +107,26 @@ public final class RealmwrightData {
     public static void setRecordsHistory(ItemStack stack, boolean value) {
         CompoundTag tag = root(stack);
         tag.putBoolean(RECORD_HISTORY, value);
+        writeRoot(stack, tag);
+    }
+
+    /**
+     * Whether builds made with this individual scepter may replace obstructing
+     * blocks. Absence deliberately means false so existing scepters remain
+     * non-destructive after upgrading.
+     */
+    public static boolean allowsReplacement(ItemStack stack) {
+        return allowsReplacement(readRoot(stack));
+    }
+
+    static boolean allowsReplacement(CompoundTag tag) {
+        return tag != null && tag.contains(ALLOW_REPLACEMENT, Tag.TAG_BYTE)
+                && tag.getBoolean(ALLOW_REPLACEMENT);
+    }
+
+    public static void setAllowsReplacement(ItemStack stack, boolean value) {
+        CompoundTag tag = root(stack);
+        tag.putBoolean(ALLOW_REPLACEMENT, value);
         writeRoot(stack, tag);
     }
 

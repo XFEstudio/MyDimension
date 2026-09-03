@@ -42,7 +42,7 @@ final class BuilderFocusedOutlineCache {
 
     /**
      * Changes focus without destroying the previous VBO immediately. The maximum-width outline
-     * fades over the always-present normal outline, giving even a 65k-cell group a smooth grow and
+     * fades over the always-present normal outline, giving even a very large group a smooth grow and
      * shrink transition without rebuilding all of its geometry every frame.
      */
     void synchronize(@Nullable BuilderPreviewState.MissingGroup group, long nowNanos) {
@@ -76,7 +76,7 @@ final class BuilderFocusedOutlineCache {
         if (group.cells().isEmpty()) return;
 
         // Group only lightweight cell references here. Edge expansion is deferred until a
-        // section is actually visible, so moving the crosshair into a 65k-cell group cannot
+        // section is actually visible, so moving the crosshair into a very large group cannot
         // allocate hundreds of thousands of edge objects in one frame.
         Map<SectionKey, List<BuilderPreviewState.Cell>> grouped = new LinkedHashMap<>();
         for (BuilderPreviewState.Cell cell : group.cells()) {

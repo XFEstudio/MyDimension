@@ -11,6 +11,8 @@ import com.xfestudio.mydimension.builder.blueprint.BlueprintData;
 import com.xfestudio.mydimension.builder.blueprint.BlueprintPlacementPlan;
 import com.xfestudio.mydimension.builder.blueprint.BlueprintSaveMode;
 import com.xfestudio.mydimension.builder.blueprint.BlueprintTransform;
+import com.xfestudio.mydimension.builder.BuilderReplacementPolicy;
+import com.xfestudio.mydimension.builder.BuilderTags;
 import com.xfestudio.mydimension.builder.blueprint.client.ClientBlueprintTransfers;
 import com.xfestudio.mydimension.client.builder.blueprint.BlueprintCaptureScreen;
 import com.xfestudio.mydimension.client.builder.blueprint.ClientBlueprintLibrary;
@@ -78,7 +80,7 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
         UUID selected = selectedBlueprintId;
         if (java.util.Objects.equals(value.selectedBlueprintId(), selected)) return value;
         return new BuilderClientSnapshot(value.enabled(), value.mode(), value.surfaceMatch(),
-                value.historyRecording(),
+                value.historyRecording(), value.allowReplacement(),
                 value.buildLimit(), value.demolishLimit(), value.maximumBuildLimit(),
                 value.maximumDemolishLimit(), value.reach(), value.status(), value.activeJobId(),
                 value.completedBlocks(), value.totalBlocks(), value.canUndo(), value.canRedo(),
@@ -103,6 +105,8 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
                     value.buildLimit(), value.demolishLimit()));
         } else if (command instanceof BuilderClientCommand.SetHistoryRecording value) {
             ModNetwork.CHANNEL.sendToServer(BuilderCommandPacket.setHistoryRecording(value.enabled()));
+        } else if (command instanceof BuilderClientCommand.SetAllowReplacement value) {
+            ModNetwork.CHANNEL.sendToServer(BuilderCommandPacket.setAllowReplacement(value.enabled()));
         } else if (command instanceof BuilderClientCommand.UseTarget value) {
             switch (value.kind()) {
                 case AUTO -> ModNetwork.CHANNEL.sendToServer(BuilderCommandPacket.use(
@@ -145,6 +149,7 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
 
     @Override
     public void snapshot(BuilderSnapshotPacket packet) {
+        boolean replacementSettingChanged = snapshot.allowReplacement() != packet.allowReplacement();
         availability(packet.enabled());
         List<BuilderClientSnapshot.AnchorView> anchors = packet.anchors().stream()
                 .map(anchor -> new BuilderClientSnapshot.AnchorView(anchor.id(), anchor.name(),
@@ -158,11 +163,12 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
                         BuilderClientSnapshot.HistoryStatus.valueOf(entry.status().name())))
                 .toList();
         snapshot = new BuilderClientSnapshot(packet.enabled(), packet.mode(), packet.surfaceMatch(),
-                packet.historyRecording(),
+                packet.historyRecording(), packet.allowReplacement(),
                 packet.buildLimit(), packet.demolishLimit(), packet.maximumBuildLimit(),
                 packet.maximumDemolishLimit(), packet.reach(), packet.status(), packet.activeJobId(),
                 packet.completedBlocks(), packet.totalBlocks(), packet.canUndo(), packet.canRedo(),
                 anchors, history, selectedBlueprintId);
+        if (replacementSettingChanged) previewDirty = true;
     }
 
     @Override
@@ -536,7 +542,12 @@ public final class BuilderClientNetworkBridge implements BuilderClientBridge,
             net.minecraft.world.level.block.state.BlockState current = minecraft.level.getBlockState(block.worldPos());
             BuilderPreviewState.Kind kind = current.equals(block.state())
                     ? BuilderPreviewState.Kind.BLUEPRINT
-                    : current.canBeReplaced() ? BuilderPreviewState.Kind.BUILD : BuilderPreviewState.Kind.INVALID;
+                    : BuilderReplacementPolicy.canReplaceTarget(current, minecraft.level, block.worldPos(),
+                    snapshot().allowReplacement(), minecraft.player.isCreative())
+                    && block.state().canSurvive(minecraft.level, block.worldPos())
+                    && !block.state().is(BuilderTags.CONSTRUCTION_PROTECTED)
+                    && !block.state().is(BuilderTags.TRANSACTION_UNSAFE)
+                    ? BuilderPreviewState.Kind.BUILD : BuilderPreviewState.Kind.INVALID;
             // An already-matching BLUEPRINT cell is the real world block itself. Baking a
             // second translucent model at the exact same coordinates causes depth fighting
             // while the player moves; retain its blue outline only.

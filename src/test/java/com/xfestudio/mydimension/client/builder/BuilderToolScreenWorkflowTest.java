@@ -47,7 +47,7 @@ class BuilderToolScreenWorkflowTest {
 
     private static BuilderClientSnapshot snapshot(UUID activeJobId, int completed, int total) {
         return new BuilderClientSnapshot(true, BuilderMode.BUILD, SurfaceMatchMode.SAME_BLOCK,
-                false, 256, 64, 4_096, 1_024, 64, "", activeJobId,
+                false, false, 256, 64, 4_096, 1_024, 64, "", activeJobId,
                 completed, total, false, false, List.of(), List.of(), null);
     }
 

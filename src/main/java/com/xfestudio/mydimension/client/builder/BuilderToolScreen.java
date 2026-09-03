@@ -32,6 +32,7 @@ public class BuilderToolScreen extends Screen {
     private BuilderMode localMode = BuilderMode.BUILD;
     private SurfaceMatchMode localMatch = SurfaceMatchMode.SAME_BLOCK;
     private boolean localHistoryRecording;
+    private boolean localAllowReplacement;
     private EditBox buildLimit;
     private EditBox demolishLimit;
     private EditBox aclPlayer;
@@ -61,6 +62,7 @@ public class BuilderToolScreen extends Screen {
         localMode = snapshot.mode();
         localMatch = snapshot.surfaceMatch();
         localHistoryRecording = snapshot.historyRecording();
+        localAllowReplacement = snapshot.allowReplacement();
         addTabs();
         switch (tab) {
             case OPERATIONS -> initOperations();
@@ -123,6 +125,13 @@ public class BuilderToolScreen extends Screen {
             BuilderClientServices.send(new BuilderClientCommand.SetHistoryRecording(localHistoryRecording));
         }).bounds(left, top + 82, 172, 20).build();
         addRenderableWidget(history);
+
+        Button replacement = Button.builder(replacementLabel(), button -> {
+            localAllowReplacement = !localAllowReplacement;
+            button.setMessage(replacementLabel());
+            BuilderClientServices.send(new BuilderClientCommand.SetAllowReplacement(localAllowReplacement));
+        }).bounds(left + 184, top + 82, 184, 20).build();
+        addRenderableWidget(replacement);
 
         Button undo = Button.builder(Component.translatable("screen.mydimension.realmwright.undo"),
                 button -> BuilderClientServices.send(new BuilderClientCommand.Undo()))
@@ -471,6 +480,12 @@ public class BuilderToolScreen extends Screen {
         return Component.translatable(localHistoryRecording
                 ? "screen.mydimension.realmwright.history_recording.on"
                 : "screen.mydimension.realmwright.history_recording.off");
+    }
+
+    private Component replacementLabel() {
+        return Component.translatable(localAllowReplacement
+                ? "screen.mydimension.realmwright.allow_replacement.on"
+                : "screen.mydimension.realmwright.allow_replacement.off");
     }
 
     private Button workflowCancelButton(int left, int top, WorkflowKind kind) {

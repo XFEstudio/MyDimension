@@ -163,7 +163,7 @@ final class BuilderPreviewSectionMeshCache {
                     progressed = true;
                     // Spend the next slot on this same nearest section. It can therefore publish
                     // in ceil(sectionUploads / frameBudget) frames instead of waiting behind every
-                    // section in a 65k-cell blueprint.
+                    // section in a large blueprint.
                     break;
                 }
             }

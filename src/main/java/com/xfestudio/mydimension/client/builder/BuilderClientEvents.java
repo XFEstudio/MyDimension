@@ -66,18 +66,21 @@ public final class BuilderClientEvents {
             }
 
             BuilderPreviewState preview = BuilderPreviewState.get();
+            BuilderPreviewVisibility visibility = BuilderPreviewVisibility.forModifiers(
+                    Screen.hasControlDown(), Screen.hasAltDown(),
+                    preview.isBlueprintPreviewActive());
             BuilderClientCommand.Target commandTarget;
-            if (Screen.hasControlDown()) {
+            if (visibility.controlGesture()) {
                 commandTarget = CONTROL_TARGET.target();
                 if (commandTarget == null) {
                     BlockHitResult blockTarget = extendedBlockHit(minecraft);
                     if (blockTarget == null) return;
                     commandTarget = target(blockTarget, false);
                 }
-                if (CONTROL_TARGET.isAirMode() && preview.isBlueprintPreviewActive()) {
+                if (visibility.placesBlueprintOnUse()) {
                     BuilderClientServices.send(new BuilderClientCommand.UseTarget(commandTarget,
                             BuilderClientCommand.UseKind.PLACE_BLUEPRINT, preview.activeJobId()));
-                } else {
+                } else if (visibility.selectsBlueprintPointOnUse()) {
                     BuilderClientServices.send(new BuilderClientCommand.SelectBlueprintPoint(commandTarget));
                 }
                 CONTROL_TARGET.consumeCurrent();
@@ -129,6 +132,11 @@ public final class BuilderClientEvents {
 
         if (event.isAttack()) {
             BuilderPreviewState preview = BuilderPreviewState.get();
+            BuilderPreviewVisibility visibility = BuilderPreviewVisibility.forModifiers(
+                    Screen.hasControlDown(), Screen.hasAltDown(),
+                    preview.isBlueprintPreviewActive());
+            BuilderPreviewState.Focus focus = preview.focus();
+            if (focus != null && !visibility.showsFocus(focus.kind())) return;
             BuilderPreviewState.CancelTarget cancelTarget = preview.focusedCancelTarget();
             if (cancelTarget == null) return;
             switch (cancelTarget) {
@@ -235,8 +243,14 @@ public final class BuilderClientEvents {
 
         int reach = Math.max(1, BuilderClientServices.snapshot().reach());
         CONTROL_TARGET.tick(minecraft, reach);
-        BuilderSurfacePreviewPlanner.update(minecraft);
-        BuilderPreviewState.get().updateHoveredTarget(minecraft, 1.0F, reach);
+        BuilderPreviewState preview = BuilderPreviewState.get();
+        BuilderPreviewVisibility visibility = BuilderPreviewVisibility.forModifiers(
+                Screen.hasControlDown(), Screen.hasAltDown(),
+                preview.isBlueprintPreviewActive());
+        if (!visibility.pausesSurfacePlanning()) {
+            BuilderSurfacePreviewPlanner.update(minecraft);
+        }
+        preview.updateHoveredTarget(minecraft, 1.0F, reach, visibility);
         BuilderPreviewRenderer.tick(minecraft);
     }
 

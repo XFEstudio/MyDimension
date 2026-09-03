@@ -16,13 +16,16 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.players.ServerOpListEntry;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.Container;
 import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Block;
@@ -31,6 +34,7 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.block.piston.PistonMovingBlockEntity;
 import net.minecraft.world.level.material.Fluids;
+import net.minecraft.world.level.GameType;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
@@ -137,13 +141,17 @@ public final class BuilderGameTests {
         BlockPos visibleUpper = helper.absolutePos(new BlockPos(2, 3, 3));
         BlockPos buried = helper.absolutePos(new BlockPos(2, 1, 3));
         BlockPos solidBacking = buried.north();
+        BlockPos outwardGround = solidBacking.north();
         helper.getLevel().setBlock(visibleLower, Blocks.STONE.defaultBlockState(), Block.UPDATE_ALL);
         helper.getLevel().setBlock(visibleUpper, Blocks.STONE.defaultBlockState(), Block.UPDATE_ALL);
         helper.getLevel().setBlock(buried, Blocks.STONE.defaultBlockState(), Block.UPDATE_ALL);
         helper.getLevel().setBlock(solidBacking, Blocks.STONE.defaultBlockState(), Block.UPDATE_ALL);
+        helper.getLevel().setBlock(outwardGround, Blocks.STONE.defaultBlockState(), Block.UPDATE_ALL);
 
         SurfacePlanner.Plan build = SurfacePlanner.plan(helper.getLevel(), visibleLower, Direction.NORTH,
                 BuilderMode.BUILD, SurfaceMatchMode.SAME_BLOCK, 16, null);
+        SurfacePlanner.Plan replacementBuild = SurfacePlanner.plan(helper.getLevel(), visibleLower,
+                Direction.NORTH, BuilderMode.BUILD, SurfaceMatchMode.SAME_BLOCK, 16, null, true);
         SurfacePlanner.Plan demolish = SurfacePlanner.plan(helper.getLevel(), visibleLower, Direction.NORTH,
                 BuilderMode.DEMOLISH, SurfaceMatchMode.SAME_BLOCK, 16, null);
 
@@ -153,7 +161,11 @@ public final class BuilderGameTests {
         helper.assertTrue(demolish.candidates().stream()
                         .noneMatch(candidate -> candidate.reference().equals(buried)),
                 "Demolish planning crossed a solid ground backing into the buried wall");
-        helper.assertTrue(build.candidates().size() == 2 && demolish.candidates().size() == 2,
+        helper.assertTrue(replacementBuild.candidates().stream()
+                        .noneMatch(candidate -> candidate.reference().equals(buried)),
+                "Replacement-enabled build planning crossed a solid ground backing into the buried wall");
+        helper.assertTrue(build.candidates().size() == 2 && replacementBuild.candidates().size() == 2
+                        && demolish.candidates().size() == 2,
                 "Visible wall cells were lost while excluding the buried continuation");
         helper.succeed();
     }
@@ -308,6 +320,324 @@ public final class BuilderGameTests {
     }
 
     @GameTest(template = "empty")
+    public static void replacementSettingBreaksOnlySurvivalBreakableObstacles(GameTestHelper helper) {
+        BlockPos disabled = helper.absolutePos(new BlockPos(1, 1, 1));
+        BlockPos enabled = helper.absolutePos(new BlockPos(3, 1, 1));
+        BlockPos unbreakable = helper.absolutePos(new BlockPos(5, 1, 1));
+        BlockPos piston = helper.absolutePos(new BlockPos(7, 1, 1));
+        helper.getLevel().setBlock(disabled, Blocks.DIRT.defaultBlockState(), Block.UPDATE_ALL);
+        helper.getLevel().setBlock(enabled, Blocks.DIRT.defaultBlockState(), Block.UPDATE_ALL);
+        helper.getLevel().setBlock(unbreakable, Blocks.BEDROCK.defaultBlockState(), Block.UPDATE_ALL);
+        helper.getLevel().setBlock(piston, Blocks.PISTON.defaultBlockState(), Block.UPDATE_ALL);
+
+        ServerPlayer player = FakePlayerFactory.get(helper.getLevel(),
+                new GameProfile(UUID.randomUUID(), "replacement-survival-test-player"));
+        ItemStack scepter = new ItemStack(ModItems.REALMWRIGHT_SCEPTER.get());
+        player.setItemInHand(InteractionHand.MAIN_HAND, scepter);
+        player.getInventory().setItem(9, new ItemStack(Items.STONE, 3));
+
+        BuilderOperationManager.BlueprintBatchResult disabledResult =
+                BuilderOperationManager.executeBlueprintBatch(player, scepter,
+                        List.of(planned(disabled, Blocks.STONE.defaultBlockState())),
+                        UUID.randomUUID(), false);
+        helper.assertTrue(disabledResult.changed() == 0 && disabledResult.blocked() == 1
+                        && helper.getLevel().getBlockState(disabled).is(Blocks.DIRT)
+                        && countItem(player, Items.STONE) == 3,
+                "Replacement-off changed an obstacle or consumed its reserved material");
+
+        RealmwrightData.setAllowsReplacement(scepter, true);
+        BuilderOperationManager.BlueprintBatchResult enabledResult =
+                BuilderOperationManager.executeBlueprintBatch(player, scepter,
+                        List.of(planned(enabled, Blocks.STONE.defaultBlockState())),
+                        UUID.randomUUID(), false);
+        helper.assertTrue(enabledResult.changed() == 1 && enabledResult.blocked() == 0
+                        && helper.getLevel().getBlockState(enabled).is(Blocks.STONE)
+                        && countItem(player, Items.STONE) == 2 && countItem(player, Items.DIRT) == 1,
+                "Enabled survival replacement did not settle its real block drop exactly once");
+
+        BuilderOperationManager.BlueprintBatchResult unbreakableResult =
+                BuilderOperationManager.executeBlueprintBatch(player, scepter,
+                        List.of(planned(unbreakable, Blocks.STONE.defaultBlockState())),
+                        UUID.randomUUID(), false);
+        helper.assertTrue(unbreakableResult.changed() == 0 && unbreakableResult.blocked() == 1
+                        && helper.getLevel().getBlockState(unbreakable).is(Blocks.BEDROCK)
+                        && countItem(player, Items.STONE) == 2,
+                "Survival replacement bypassed unbreakable hardness or lost material");
+
+        BuilderOperationManager.BlueprintBatchResult pistonResult =
+                BuilderOperationManager.executeBlueprintBatch(player, scepter,
+                        List.of(planned(piston, Blocks.STONE.defaultBlockState())),
+                        UUID.randomUUID(), false);
+        helper.assertTrue(pistonResult.changed() == 1 && pistonResult.blocked() == 0
+                        && helper.getLevel().getBlockState(piston).is(Blocks.STONE)
+                        && countItem(player, Items.STONE) == 1
+                        && countItem(player, Items.PISTON) == 1,
+                "A survival-breakable obstacle was rejected solely because of its block tag");
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
+    public static void replacementSurfaceCanStartBehindObstruction(GameTestHelper helper) {
+        BlockPos reference = helper.absolutePos(new BlockPos(2, 1, 2));
+        BlockPos obstruction = reference.above();
+        helper.getLevel().setBlock(reference, Blocks.STONE.defaultBlockState(), Block.UPDATE_ALL);
+        helper.getLevel().setBlock(obstruction, Blocks.DIRT.defaultBlockState(), Block.UPDATE_ALL);
+
+        SurfacePlanner.Plan disabled = SurfacePlanner.plan(helper.getLevel(), reference, Direction.UP,
+                BuilderMode.BUILD, SurfaceMatchMode.SAME_BLOCK, 8,
+                Blocks.OAK_PLANKS.defaultBlockState(), false);
+        SurfacePlanner.Plan enabled = SurfacePlanner.plan(helper.getLevel(), reference, Direction.UP,
+                BuilderMode.BUILD, SurfaceMatchMode.SAME_BLOCK, 8,
+                Blocks.OAK_PLANKS.defaultBlockState(), true);
+        helper.assertTrue(disabled.candidates().isEmpty()
+                        && enabled.candidates().size() == 1
+                        && enabled.candidates().get(0).target().equals(obstruction),
+                "Replacement-enabled surface planning could not start behind an obstruction");
+
+        ServerPlayer player = FakePlayerFactory.get(helper.getLevel(),
+                new GameProfile(UUID.randomUUID(), "replacement-surface-test-player"));
+        ItemStack scepter = new ItemStack(ModItems.REALMWRIGHT_SCEPTER.get());
+        RealmwrightData.setAllowsReplacement(scepter, true);
+        RealmwrightData.setRecordsHistory(scepter, false);
+        player.setItemInHand(InteractionHand.MAIN_HAND, scepter);
+        player.setItemInHand(InteractionHand.OFF_HAND, new ItemStack(Items.OAK_PLANKS));
+        player.getInventory().setItem(9, new ItemStack(Items.OAK_PLANKS));
+        BlockHitResult hit = new BlockHitResult(Vec3.atCenterOf(reference), Direction.UP,
+                reference, false);
+        BuilderOperationManager.Result result =
+                BuilderOperationManager.executeValidatedSurface(player, scepter, hit);
+        helper.assertTrue(result.changed() == 1
+                        && helper.getLevel().getBlockState(obstruction).is(Blocks.OAK_PLANKS)
+                        && countItem(player, Items.DIRT) == 1,
+                "Ordinary surface construction did not apply replacement semantics");
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
+    public static void replacementNeverBreaksBeforeMaterialIsAvailable(GameTestHelper helper) {
+        BlockPos target = helper.absolutePos(new BlockPos(2, 1, 2));
+        helper.getLevel().setBlock(target, Blocks.DIRT.defaultBlockState(), Block.UPDATE_ALL);
+        ServerPlayer player = FakePlayerFactory.get(helper.getLevel(),
+                new GameProfile(UUID.randomUUID(), "replacement-missing-material-test-player"));
+        ItemStack scepter = new ItemStack(ModItems.REALMWRIGHT_SCEPTER.get());
+        RealmwrightData.setAllowsReplacement(scepter, true);
+        player.setItemInHand(InteractionHand.MAIN_HAND, scepter);
+
+        BuilderOperationManager.BlueprintBatchResult result =
+                BuilderOperationManager.executeBlueprintBatch(player, scepter,
+                        List.of(planned(target, Blocks.OAK_PLANKS.defaultBlockState())),
+                        UUID.randomUUID(), false);
+        helper.assertTrue(result.changed() == 0 && result.missing().size() == 1
+                        && helper.getLevel().getBlockState(target).is(Blocks.DIRT)
+                        && countItem(player, Items.DIRT) == 0,
+                "Replacement broke its obstacle before construction material was available");
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
+    public static void replacementHarvestsToolGatedAndContainerDrops(GameTestHelper helper) {
+        BlockPos stone = helper.absolutePos(new BlockPos(1, 1, 1));
+        BlockPos chest = helper.absolutePos(new BlockPos(3, 1, 1));
+        helper.getLevel().setBlock(stone, Blocks.STONE.defaultBlockState(), Block.UPDATE_ALL);
+        helper.getLevel().setBlock(chest, Blocks.CHEST.defaultBlockState(), Block.UPDATE_ALL);
+        Container contents = (Container) helper.getLevel().getBlockEntity(chest);
+        contents.setItem(0, new ItemStack(Items.DIAMOND, 4));
+
+        ServerPlayer player = FakePlayerFactory.get(helper.getLevel(),
+                new GameProfile(UUID.randomUUID(), "replacement-drops-test-player"));
+        ItemStack scepter = new ItemStack(ModItems.REALMWRIGHT_SCEPTER.get());
+        RealmwrightData.setAllowsReplacement(scepter, true);
+        player.setItemInHand(InteractionHand.MAIN_HAND, scepter);
+        player.getInventory().setItem(9, new ItemStack(Items.OAK_PLANKS, 2));
+
+        BuilderOperationManager.BlueprintBatchResult result =
+                BuilderOperationManager.executeBlueprintBatch(player, scepter,
+                        List.of(planned(stone, Blocks.OAK_PLANKS.defaultBlockState()),
+                                planned(chest, Blocks.OAK_PLANKS.defaultBlockState())),
+                        UUID.randomUUID(), false);
+        helper.assertTrue(result.changed() == 2 && result.blocked() == 0
+                        && helper.getLevel().getBlockState(stone).is(Blocks.OAK_PLANKS)
+                        && helper.getLevel().getBlockState(chest).is(Blocks.OAK_PLANKS)
+                        && countItem(player, Items.OAK_PLANKS) == 0
+                        && countItem(player, Items.COBBLESTONE) == 1
+                        && countItem(player, Items.CHEST) == 1
+                        && countItem(player, Items.DIAMOND) == 4,
+                "Replacement did not preserve tool-gated loot and container lifecycle drops");
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
+    public static void creativeReplacementBypassesHardnessWithoutDrops(GameTestHelper helper) {
+        BlockPos unbreakable = helper.absolutePos(new BlockPos(1, 1, 1));
+        BlockPos ordinary = helper.absolutePos(new BlockPos(3, 1, 1));
+        helper.getLevel().setBlock(unbreakable, Blocks.BEDROCK.defaultBlockState(), Block.UPDATE_ALL);
+        helper.getLevel().setBlock(ordinary, Blocks.DIRT.defaultBlockState(), Block.UPDATE_ALL);
+
+        ServerPlayer player = FakePlayerFactory.get(helper.getLevel(),
+                new GameProfile(UUID.randomUUID(), "replacement-creative-test-player"));
+        player.setGameMode(GameType.CREATIVE);
+        ItemStack scepter = new ItemStack(ModItems.REALMWRIGHT_SCEPTER.get());
+        RealmwrightData.setAllowsReplacement(scepter, true);
+        player.setItemInHand(InteractionHand.MAIN_HAND, scepter);
+
+        BuilderOperationManager.BlueprintBatchResult result =
+                BuilderOperationManager.executeBlueprintBatch(player, scepter,
+                        List.of(planned(unbreakable, Blocks.STONE.defaultBlockState()),
+                                planned(ordinary, Blocks.STONE.defaultBlockState())),
+                        UUID.randomUUID(), false);
+        helper.assertTrue(result.changed() == 2 && result.blocked() == 0
+                        && helper.getLevel().getBlockState(unbreakable).is(Blocks.STONE)
+                        && helper.getLevel().getBlockState(ordinary).is(Blocks.STONE)
+                        && countItem(player, Items.DIRT) == 0,
+                "Creative replacement did not bypass hardness or incorrectly produced drops");
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
+    public static void replacementHonorsBreakAndPlaceProtectionWithoutPartialMutation(GameTestHelper helper) {
+        BlockPos breakDenied = helper.absolutePos(new BlockPos(1, 1, 1));
+        BlockPos placeDenied = helper.absolutePos(new BlockPos(3, 1, 1));
+        helper.getLevel().setBlock(breakDenied, Blocks.DIRT.defaultBlockState(), Block.UPDATE_ALL);
+        helper.getLevel().setBlock(placeDenied, Blocks.DIRT.defaultBlockState(), Block.UPDATE_ALL);
+        ServerPlayer player = FakePlayerFactory.get(helper.getLevel(),
+                new GameProfile(UUID.randomUUID(), "replacement-protection-test-player"));
+        ItemStack scepter = new ItemStack(ModItems.REALMWRIGHT_SCEPTER.get());
+        RealmwrightData.setAllowsReplacement(scepter, true);
+        player.setItemInHand(InteractionHand.MAIN_HAND, scepter);
+        player.getInventory().setItem(9, new ItemStack(Items.STONE, 2));
+
+        int[] breakEvents = {0};
+        int[] placeEvents = {0};
+
+        Consumer<BlockEvent.BreakEvent> breakListener = event -> {
+            if (event.getPlayer() != player) return;
+            breakEvents[0]++;
+            if (event.getPos().equals(breakDenied)) event.setCanceled(true);
+        };
+        Consumer<BlockEvent.EntityPlaceEvent> placeListener = event -> {
+            if (event.getEntity() != player) return;
+            placeEvents[0]++;
+            if (event.getPos().equals(placeDenied)) event.setCanceled(true);
+        };
+        try {
+            MinecraftForge.EVENT_BUS.addListener(EventPriority.NORMAL, false,
+                    BlockEvent.BreakEvent.class, breakListener);
+            MinecraftForge.EVENT_BUS.addListener(EventPriority.NORMAL, false,
+                    BlockEvent.EntityPlaceEvent.class, placeListener);
+            BuilderOperationManager.BlueprintBatchResult result =
+                    BuilderOperationManager.executeBlueprintBatch(player, scepter,
+                            List.of(planned(breakDenied, Blocks.STONE.defaultBlockState()),
+                                    planned(placeDenied, Blocks.STONE.defaultBlockState())),
+                            UUID.randomUUID(), false);
+            helper.assertTrue(result.changed() == 0 && result.blocked() == 2
+                            && helper.getLevel().getBlockState(breakDenied).is(Blocks.DIRT)
+                            && helper.getLevel().getBlockState(placeDenied).is(Blocks.DIRT)
+                            && countItem(player, Items.STONE) == 2 && countItem(player, Items.DIRT) == 0
+                            && breakEvents[0] == 2 && placeEvents[0] == 1,
+                    "Protection cancellation left a partial replacement, drop, or material debit");
+            helper.succeed();
+        } catch (RuntimeException exception) {
+            helper.fail(exception.getMessage());
+        } finally {
+            MinecraftForge.EVENT_BUS.unregister(breakListener);
+            MinecraftForge.EVENT_BUS.unregister(placeListener);
+        }
+    }
+
+    @GameTest(template = "empty")
+    public static void replacementHistoryReclaimsAndReissuesDrops(GameTestHelper helper) {
+        BlockPos target = helper.absolutePos(new BlockPos(2, 1, 2));
+        helper.getLevel().setBlock(target, Blocks.DIRT.defaultBlockState(), Block.UPDATE_ALL);
+        ServerPlayer player = FakePlayerFactory.get(helper.getLevel(),
+                new GameProfile(UUID.randomUUID(), "replacement-history-test-player"));
+        ItemStack scepter = new ItemStack(ModItems.REALMWRIGHT_SCEPTER.get());
+        RealmwrightData.ensureId(scepter);
+        RealmwrightData.setAllowsReplacement(scepter, true);
+        player.setItemInHand(InteractionHand.MAIN_HAND, scepter);
+        player.getInventory().setItem(9, new ItemStack(Items.STONE));
+
+        BuilderOperationManager.BlueprintBatchResult built =
+                BuilderOperationManager.executeBlueprintBatch(player, scepter,
+                        List.of(planned(target, Blocks.STONE.defaultBlockState())),
+                        UUID.randomUUID(), true);
+        helper.assertTrue(built.changed() == 1 && built.committed()
+                        && helper.getLevel().getBlockState(target).is(Blocks.STONE)
+                        && countItem(player, Items.DIRT) == 1 && countItem(player, Items.STONE) == 0,
+                "History-enabled replacement did not commit its item ledger");
+
+        helper.assertTrue(BuilderHistoryService.undo(player, scepter)
+                        && helper.getLevel().getBlockState(target).is(Blocks.DIRT)
+                        && countItem(player, Items.DIRT) == 0 && countItem(player, Items.STONE) == 1,
+                "Undo did not reclaim the replacement drop and refund construction material");
+        helper.assertTrue(BuilderHistoryService.redo(player, scepter)
+                        && helper.getLevel().getBlockState(target).is(Blocks.STONE)
+                        && countItem(player, Items.DIRT) == 1 && countItem(player, Items.STONE) == 0,
+                "Redo did not debit construction material and reissue the replacement drop");
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
+    public static void replacementHistoryCannotRedoUnbreakableBlockAfterLeavingCreative(GameTestHelper helper) {
+        BlockPos target = helper.absolutePos(new BlockPos(2, 1, 2));
+        helper.getLevel().setBlock(target, Blocks.BEDROCK.defaultBlockState(), Block.UPDATE_ALL);
+        ServerPlayer player = FakePlayerFactory.get(helper.getLevel(),
+                new GameProfile(UUID.randomUUID(), "replacement-history-hardness-test-player"));
+        player.setGameMode(GameType.CREATIVE);
+        ItemStack scepter = new ItemStack(ModItems.REALMWRIGHT_SCEPTER.get());
+        RealmwrightData.ensureId(scepter);
+        RealmwrightData.setAllowsReplacement(scepter, true);
+        player.setItemInHand(InteractionHand.MAIN_HAND, scepter);
+
+        BuilderOperationManager.BlueprintBatchResult built =
+                BuilderOperationManager.executeBlueprintBatch(player, scepter,
+                        List.of(planned(target, Blocks.STONE.defaultBlockState())),
+                        UUID.randomUUID(), true);
+        helper.assertTrue(built.changed() == 1 && built.committed()
+                        && BuilderHistoryService.undo(player, scepter)
+                        && helper.getLevel().getBlockState(target).is(Blocks.BEDROCK),
+                "Creative replacement history was not prepared for the cross-mode redo test");
+
+        player.setGameMode(GameType.SURVIVAL);
+        helper.assertTrue(!BuilderHistoryService.redo(player, scepter)
+                        && helper.getLevel().getBlockState(target).is(Blocks.BEDROCK),
+                "Survival redo bypassed the unbreakable-block replacement rule");
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
+    public static void replacementHistoryCannotRestoreGameMasterBlockAfterLosingPermission(
+            GameTestHelper helper) {
+        BlockPos target = helper.absolutePos(new BlockPos(2, 1, 2));
+        helper.getLevel().setBlock(target, Blocks.COMMAND_BLOCK.defaultBlockState(), Block.UPDATE_ALL);
+        ServerPlayer player = FakePlayerFactory.get(helper.getLevel(),
+                new GameProfile(UUID.randomUUID(), "replacement-history-op-test-player"));
+        player.setGameMode(GameType.CREATIVE);
+        player.getServer().getPlayerList().getOps().add(
+                new ServerOpListEntry(player.getGameProfile(), 4, false));
+        helper.assertTrue(player.canUseGameMasterBlocks(),
+                "GameTest fixture could not grant command-block permission");
+
+        ItemStack scepter = new ItemStack(ModItems.REALMWRIGHT_SCEPTER.get());
+        RealmwrightData.ensureId(scepter);
+        RealmwrightData.setAllowsReplacement(scepter, true);
+        player.setItemInHand(InteractionHand.MAIN_HAND, scepter);
+        BuilderOperationManager.BlueprintBatchResult built =
+                BuilderOperationManager.executeBlueprintBatch(player, scepter,
+                        List.of(planned(target, Blocks.STONE.defaultBlockState())),
+                        UUID.randomUUID(), true);
+        helper.assertTrue(built.changed() == 1 && built.committed()
+                        && helper.getLevel().getBlockState(target).is(Blocks.STONE),
+                "Permitted creative replacement did not create command-block history");
+
+        player.getServer().getPlayerList().deop(player.getGameProfile());
+        helper.assertTrue(!player.canUseGameMasterBlocks()
+                        && !BuilderHistoryService.undo(player, scepter)
+                        && helper.getLevel().getBlockState(target).is(Blocks.STONE),
+                "History restored a game-master block after the player lost permission");
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
     public static void dropFreeRemovalSuppressesContainerContentsAndRestoresFluid(GameTestHelper helper) {
         BlockPos chest = helper.absolutePos(new BlockPos(1, 1, 1));
         helper.getLevel().setBlock(chest, Blocks.CHEST.defaultBlockState(), Block.UPDATE_ALL);
@@ -376,6 +706,48 @@ public final class BuilderGameTests {
         helper.getLevel().setBlock(position, Blocks.DIAMOND_BLOCK.defaultBlockState(), Block.UPDATE_ALL);
         helper.assertTrue(!transaction.matchesAppliedAfter(helper.getLevel()),
                 "External edits must not be absorbed into a resumed transaction");
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
+    public static void transactionContinuationMergesRepeatedPositions(GameTestHelper helper) {
+        UUID transactionId = UUID.randomUUID();
+        UUID scepterId = UUID.randomUUID();
+        BlockPos firstPos = helper.absolutePos(new BlockPos(1, 1, 1));
+        BlockPos secondPos = firstPos.east();
+        CompoundTag earliestBefore = new CompoundTag();
+        earliestBefore.putString("Marker", "earliest-before");
+        CompoundTag intermediate = new CompoundTag();
+        intermediate.putString("Marker", "intermediate");
+        CompoundTag latestAfter = new CompoundTag();
+        latestAfter.putString("Marker", "latest-after");
+
+        BuilderTransaction first = new BuilderTransaction(transactionId, scepterId,
+                helper.getLevel().dimension(), BuilderTransaction.Type.BLUEPRINT, 1L,
+                List.of(
+                        new WorldDelta(firstPos, Blocks.STONE.defaultBlockState(), earliestBefore,
+                                Blocks.DIRT.defaultBlockState(), intermediate),
+                        new WorldDelta(secondPos, Blocks.AIR.defaultBlockState(), null,
+                                Blocks.OAK_PLANKS.defaultBlockState(), null)),
+                List.of(), List.of(), ItemStack.EMPTY, ItemStack.EMPTY,
+                BuilderTransaction.State.APPLIED);
+        BuilderTransaction continuation = new BuilderTransaction(transactionId, scepterId,
+                helper.getLevel().dimension(), BuilderTransaction.Type.BLUEPRINT, 1L,
+                List.of(new WorldDelta(firstPos, Blocks.DIRT.defaultBlockState(), intermediate,
+                        Blocks.GOLD_BLOCK.defaultBlockState(), latestAfter)),
+                List.of(), List.of(), ItemStack.EMPTY, ItemStack.EMPTY,
+                BuilderTransaction.State.APPLIED);
+
+        List<WorldDelta> merged = first.append(continuation).worldDeltas();
+        helper.assertTrue(merged.size() == 2, "Repeated positions were not merged");
+        helper.assertTrue(merged.get(0).pos().equals(firstPos) && merged.get(1).pos().equals(secondPos),
+                "Continuation changed the first-observed position order");
+        helper.assertTrue(merged.get(0).beforeState().is(Blocks.STONE)
+                        && earliestBefore.equals(merged.get(0).beforeBlockEntity()),
+                "Continuation discarded the earliest before-image");
+        helper.assertTrue(merged.get(0).afterState().is(Blocks.GOLD_BLOCK)
+                        && latestAfter.equals(merged.get(0).afterBlockEntity()),
+                "Continuation discarded the latest after-image");
         helper.succeed();
     }
 
@@ -464,6 +836,45 @@ public final class BuilderGameTests {
         } finally {
             MinecraftForge.EVENT_BUS.unregister(listener);
         }
+    }
+
+    @GameTest(template = "empty")
+    public static void blueprintPlanExceedsFormerBlockLimit(GameTestHelper helper) {
+        int blockCount = 65_537;
+        List<BlueprintData.BlockEntry> blocks = new ArrayList<>(blockCount);
+        for (int x = 0; x < blockCount; x++) {
+            blocks.add(new BlueprintData.BlockEntry(new BlockPos(x, 0, 0), 0, null));
+        }
+        try {
+            BlueprintData source = new BlueprintData(UUID.randomUUID(), "Unbounded", "gametest", null, 0L,
+                    BlueprintSaveMode.BLOCKS_ONLY, blockCount, 1, 1, BlockPos.ZERO,
+                    List.of(Blocks.STONE.defaultBlockState()), blocks);
+            BlockPos target = helper.absolutePos(new BlockPos(1, 1, 1));
+            BlueprintPlacementPlan plan = BlueprintPlacementPlan.create(source, BlueprintTransform.NONE, target);
+
+            helper.assertTrue(source.blocks().size() == blockCount,
+                    "The data model rejected a blueprint above the former 65,536-block cap");
+            helper.assertTrue(plan.blocks().size() == blockCount,
+                    "A blueprint above the former 65,536-block cap did not produce a complete placement plan");
+            helper.assertTrue(plan.blocks().get(blockCount - 1).worldPos().equals(target.offset(blockCount - 1, 0, 0)),
+                    "The unbounded placement plan lost its final block");
+            helper.succeed();
+        } catch (Exception exception) {
+            helper.fail("Large blueprint placement plan failed: " + exception.getMessage());
+        }
+    }
+
+    private static BlueprintPlacementPlan.PlannedBlock planned(BlockPos pos, BlockState state) {
+        return new BlueprintPlacementPlan.PlannedBlock(BlockPos.ZERO, pos, state, null);
+    }
+
+    private static int countItem(ServerPlayer player, Item item) {
+        int count = 0;
+        for (ItemStack stack : player.getInventory().items) {
+            if (stack.is(item)) count += stack.getCount();
+        }
+        if (player.getOffhandItem().is(item)) count += player.getOffhandItem().getCount();
+        return count;
     }
 
     private record TestPlacement(BlockPos pos, BlockState state) {

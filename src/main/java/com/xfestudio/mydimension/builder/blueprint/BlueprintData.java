@@ -100,7 +100,13 @@ public final class BlueprintData {
     }
 
     public long volume() {
-        return (long) sizeX * sizeY * sizeZ;
+        try {
+            return Math.multiplyExact(Math.multiplyExact((long) sizeX, sizeY), sizeZ);
+        } catch (ArithmeticException ignored) {
+            // Dimensions are stored as positive ints, but their mathematical product can exceed a long.
+            // Saturating keeps metadata/reporting well-defined without imposing a geometry limit.
+            return Long.MAX_VALUE;
+        }
     }
 
     public CompoundTag toTag() {
@@ -169,7 +175,6 @@ public final class BlueprintData {
         }
 
         ListTag blocksTag = structure.getList("blocks", Tag.TAG_COMPOUND);
-        if (blocksTag.size() > BlueprintLimits.MAX_BLOCKS) throw new IOException("Blueprint contains too many blocks");
         List<BlockEntry> blocks = new ArrayList<>(blocksTag.size());
         for (Tag tag : blocksTag) {
             CompoundTag blockTag = (CompoundTag) tag;
@@ -197,17 +202,15 @@ public final class BlueprintData {
     }
 
     private void validate() {
-        if (sizeX < 1 || sizeY < 1 || sizeZ < 1
-                || sizeX > BlueprintLimits.MAX_AXIS || sizeY > BlueprintLimits.MAX_AXIS
-                || sizeZ > BlueprintLimits.MAX_AXIS || volume() > BlueprintLimits.MAX_VOLUME) {
-            throw new IllegalArgumentException("Blueprint dimensions exceed the hard limit");
+        if (sizeX < 1 || sizeY < 1 || sizeZ < 1) {
+            throw new IllegalArgumentException("Blueprint dimensions must be positive");
         }
         if (anchor.getX() < 0 || anchor.getY() < 0 || anchor.getZ() < 0
                 || anchor.getX() >= sizeX || anchor.getY() >= sizeY || anchor.getZ() >= sizeZ) {
             throw new IllegalArgumentException("Blueprint anchor is outside its bounds");
         }
-        if (palette.size() > BlueprintLimits.MAX_PALETTE || blocks.size() > BlueprintLimits.MAX_BLOCKS) {
-            throw new IllegalArgumentException("Blueprint content exceeds the hard limit");
+        if (palette.size() > BlueprintLimits.MAX_PALETTE) {
+            throw new IllegalArgumentException("Blueprint palette exceeds the allocation-safety limit");
         }
         Set<BlockPos> occupied = new HashSet<>();
         int blockEntityCount = 0;
