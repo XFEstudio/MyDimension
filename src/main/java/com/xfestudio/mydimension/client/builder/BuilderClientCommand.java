@@ -39,6 +39,9 @@ public sealed interface BuilderClientCommand {
     record SetHistoryRecording(boolean enabled) implements BuilderClientCommand {
     }
 
+    record SetAllowReplacement(boolean enabled) implements BuilderClientCommand {
+    }
+
     record SelectBlueprintPoint(Target target) implements BuilderClientCommand {
     }
 

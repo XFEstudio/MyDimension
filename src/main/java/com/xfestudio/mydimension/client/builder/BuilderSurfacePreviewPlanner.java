@@ -3,6 +3,7 @@ package com.xfestudio.mydimension.client.builder;
 import com.xfestudio.mydimension.builder.BuilderMode;
 import com.xfestudio.mydimension.builder.BuilderBlockCompatibility;
 import com.xfestudio.mydimension.builder.BuilderInteractionPolicy;
+import com.xfestudio.mydimension.builder.BuilderReplacementPolicy;
 import com.xfestudio.mydimension.builder.BuilderTags;
 import com.xfestudio.mydimension.builder.SurfacePlaneTraversal;
 import com.xfestudio.mydimension.builder.SurfaceMatchMode;
@@ -64,7 +65,8 @@ public final class BuilderSurfacePreviewPlanner {
                 ? blockItem.getBlock().defaultBlockState() : null;
         PreviewKey key = new PreviewKey(minecraft.level, hit.getBlockPos().immutable(), hit.getDirection(),
                 targetState, settings.mode(), settings.surfaceMatch(),
-                settings.buildLimit(), settings.demolishLimit(), override,
+                settings.buildLimit(), settings.demolishLimit(), settings.allowReplacement(),
+                minecraft.player.isCreative(), override,
                 minecraft.level.getBlockState(hit.getBlockPos().relative(hit.getDirection())));
         boolean snapshotReplaced = showingSurfacePreview && workflow != lastPlannedSnapshot;
         if (key.equals(lastKey) && !snapshotReplaced
@@ -97,9 +99,11 @@ public final class BuilderSurfacePreviewPlanner {
                                                         BlockState override) {
         BlockState seed = level.getBlockState(hit.getBlockPos());
         if (!SurfacePlaneTraversal.isReference(seed)
-                || !SurfacePlaneTraversal.hasExposedReferenceFace(
-                level, hit.getBlockPos(), hit.getDirection(), seed)) return List.of();
+                || !isVisibleBuildReference(level, hit.getBlockPos(), hit.getDirection(), seed,
+                settings.mode(), settings.allowReplacement())) return List.of();
         BuilderMode mode = settings.mode();
+        boolean creative = Minecraft.getInstance().player != null
+                && Minecraft.getInstance().player.isCreative();
         int limit = mode == BuilderMode.BUILD ? settings.buildLimit() : settings.demolishLimit();
         int scanLimit = Math.min(65_536, Math.max(limit, limit * 16));
         SurfacePlaneTraversal.Result traversal = SurfacePlaneTraversal.traverse(
@@ -109,9 +113,22 @@ public final class BuilderSurfacePreviewPlanner {
                     return SurfacePlaneTraversal.isReference(state)
                             && (settings.surfaceMatch() != SurfaceMatchMode.SAME_BLOCK
                             || BuilderBlockCompatibility.sameSurfaceType(seed, state))
-                            && SurfacePlaneTraversal.hasExposedReferenceFace(
-                            level, pos, hit.getDirection(), state);
-                }, ignored -> true);
+                            && isVisibleBuildReference(level, pos, hit.getDirection(), state,
+                            mode, settings.allowReplacement());
+                }, pos -> {
+                    if (mode == BuilderMode.DEMOLISH) return true;
+                    BlockPos target = pos.relative(hit.getDirection());
+                    if (target.getY() < level.getMinBuildHeight()
+                            || target.getY() >= level.getMaxBuildHeight()
+                            || !level.getWorldBorder().isWithinBounds(target)) return false;
+                    BlockState source = level.getBlockState(pos);
+                    BlockState desired = override == null ? source : override;
+                    BlockState current = level.getBlockState(target);
+                    // Match SurfacePlanner's operation-budget predicate. Already-matching cells are
+                    // useful context, but must not consume a slot and hide a later executable cell.
+                    return !current.equals(desired)
+                            && (current.canBeReplaced() || settings.allowReplacement());
+                });
         List<BuilderPreviewState.Cell> result = new ArrayList<>(traversal.nodes().size());
         for (SurfacePlaneTraversal.Node node : traversal.nodes()) {
             BlockState source = level.getBlockState(node.pos());
@@ -126,7 +143,8 @@ public final class BuilderSurfacePreviewPlanner {
                 BlockState current = level.getBlockState(target);
                 BuilderPreviewState.Kind kind = current.equals(desired)
                         ? BuilderPreviewState.Kind.BLUEPRINT
-                        : current.canBeReplaced() && desired.canSurvive(level, target)
+                        : BuilderReplacementPolicy.canReplaceTarget(current, level, target,
+                        settings.allowReplacement(), creative) && desired.canSurvive(level, target)
                         && !desired.is(BuilderTags.CONSTRUCTION_PROTECTED)
                         && !desired.is(BuilderTags.TRANSACTION_UNSAFE)
                         ? BuilderPreviewState.Kind.BUILD : BuilderPreviewState.Kind.INVALID;
@@ -157,15 +175,17 @@ public final class BuilderSurfacePreviewPlanner {
 
             BuilderPreviewState.Kind currentKind = current.equals(cell.state())
                     ? BuilderPreviewState.Kind.BLUEPRINT
-                    : current.canBeReplaced() && cell.state().canSurvive(level, cell.pos())
+                    : BuilderReplacementPolicy.canReplaceTarget(current, level, cell.pos(),
+                    key.allowReplacement(), key.creative())
+                    && cell.state().canSurvive(level, cell.pos())
                     && !cell.state().is(BuilderTags.CONSTRUCTION_PROTECTED)
                     && !cell.state().is(BuilderTags.TRANSACTION_UNSAFE)
                     ? BuilderPreviewState.Kind.BUILD : BuilderPreviewState.Kind.INVALID;
             if (currentKind != cell.kind()) return true;
 
             BlockState source = level.getBlockState(cell.pos().relative(lastFace.getOpposite()));
-            if (!SurfacePlaneTraversal.hasExposedReferenceFace(
-                    level, cell.pos().relative(lastFace.getOpposite()), lastFace)) return true;
+            if (!isVisibleBuildReference(level, cell.pos().relative(lastFace.getOpposite()),
+                    lastFace, source, key.mode(), key.allowReplacement())) return true;
             if (lastOverride == null) {
                 if (!source.equals(cell.state())) return true;
             } else if (!SurfacePlaneTraversal.isReference(source)
@@ -177,7 +197,21 @@ public final class BuilderSurfacePreviewPlanner {
         return false;
     }
 
+    /** Client mirror of SurfacePlanner's visible reference/replacement surface boundary. */
+    private static boolean isVisibleBuildReference(ClientLevel level, BlockPos referencePos,
+                                                   Direction face, BlockState reference,
+                                                   BuilderMode mode, boolean allowReplacement) {
+        if (SurfacePlaneTraversal.hasExposedReferenceFace(
+                level, referencePos, face, reference)) return true;
+        if (mode != BuilderMode.BUILD || !allowReplacement) return false;
+        BlockPos target = referencePos.relative(face);
+        BlockState obstacle = level.getBlockState(target);
+        return BuilderReplacementPolicy.requiresBreaking(obstacle)
+                && SurfacePlaneTraversal.hasExposedReferenceFace(level, target, face, obstacle);
+    }
+
     private record PreviewKey(ClientLevel level, BlockPos seed, Direction face, BlockState seedState,
                               BuilderMode mode, SurfaceMatchMode match, int buildLimit,
-                              int demolishLimit, BlockState override, BlockState targetSeedState) { }
+                              int demolishLimit, boolean allowReplacement, boolean creative,
+                              BlockState override, BlockState targetSeedState) { }
 }

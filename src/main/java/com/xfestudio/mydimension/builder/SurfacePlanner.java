@@ -16,9 +16,16 @@ public final class SurfacePlanner {
 
     public static Plan plan(ServerLevel level, BlockPos seed, Direction face, BuilderMode operation,
                             SurfaceMatchMode matchMode, int operationLimit, BlockState overrideState) {
+        return plan(level, seed, face, operation, matchMode, operationLimit, overrideState, false);
+    }
+
+    public static Plan plan(ServerLevel level, BlockPos seed, Direction face, BuilderMode operation,
+                            SurfaceMatchMode matchMode, int operationLimit, BlockState overrideState,
+                            boolean allowReplacement) {
         BlockState seedState = level.getBlockState(seed);
         if (!SurfacePlaneTraversal.isReference(seedState)
-                || !SurfacePlaneTraversal.hasExposedReferenceFace(level, seed, face, seedState)) {
+                || !isVisibleOperationFace(level, seed, face, seedState, operation,
+                allowReplacement)) {
             return new Plan(List.of(), false);
         }
 
@@ -29,8 +36,8 @@ public final class SurfacePlanner {
                 pos -> {
                     BlockState reference = level.getBlockState(pos);
                     return matches(seedState, reference, matchMode)
-                            && SurfacePlaneTraversal.hasExposedReferenceFace(
-                            level, pos, face, reference);
+                            && isVisibleOperationFace(level, pos, face, reference, operation,
+                            allowReplacement);
                 },
                 pos -> {
                     if (operation == BuilderMode.DEMOLISH) {
@@ -38,7 +45,7 @@ public final class SurfacePlanner {
                     }
                     BlockState reference = level.getBlockState(pos);
                     BlockState desired = overrideState == null ? reference : overrideState;
-                    return shouldBuild(level, pos.relative(face), desired);
+                    return shouldBuild(level, pos.relative(face), desired, allowReplacement);
                 });
 
         List<Candidate> result = new ArrayList<>(traversal.nodes().size());
@@ -52,7 +59,8 @@ public final class SurfacePlanner {
         return new Plan(List.copyOf(result), traversal.truncated());
     }
 
-    private static boolean shouldBuild(ServerLevel level, BlockPos target, BlockState desired) {
+    private static boolean shouldBuild(ServerLevel level, BlockPos target, BlockState desired,
+                                       boolean allowReplacement) {
         if (target.getY() < level.getMinBuildHeight() || target.getY() >= level.getMaxBuildHeight()) {
             return false;
         }
@@ -60,7 +68,25 @@ public final class SurfacePlanner {
             return false;
         }
         BlockState existing = level.getBlockState(target);
-        return existing != desired && !existing.equals(desired) && existing.canBeReplaced();
+        return existing != desired && !existing.equals(desired)
+                && (existing.canBeReplaced() || allowReplacement);
+    }
+
+    /**
+     * Replacement may operate on a solid protrusion in front of the reference plane, but only
+     * while that protrusion itself presents the selected outer face. This keeps a visible obstacle
+     * replaceable without turning a continuous floor into a bridge toward buried reference blocks.
+     */
+    private static boolean isVisibleOperationFace(ServerLevel level, BlockPos referencePos,
+                                                  Direction face, BlockState reference,
+                                                  BuilderMode operation, boolean allowReplacement) {
+        if (SurfacePlaneTraversal.hasExposedReferenceFace(
+                level, referencePos, face, reference)) return true;
+        if (operation != BuilderMode.BUILD || !allowReplacement) return false;
+        BlockPos target = referencePos.relative(face);
+        BlockState obstacle = level.getBlockState(target);
+        return BuilderReplacementPolicy.requiresBreaking(obstacle)
+                && SurfacePlaneTraversal.hasExposedReferenceFace(level, target, face, obstacle);
     }
 
     private static boolean matches(BlockState seed, BlockState state, SurfaceMatchMode mode) {

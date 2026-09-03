@@ -31,9 +31,6 @@ public final class BuilderConfig {
     public static final ForgeConfigSpec.IntValue MAX_HISTORY_BYTES_PER_PLAYER;
     public static final ForgeConfigSpec.IntValue MAX_TRANSACTION_BYTES;
     public static final ForgeConfigSpec.ConfigValue<String> FULL_BLOCK_ENTITY_POLICY;
-    public static final ForgeConfigSpec.IntValue MAX_BLUEPRINT_AXIS;
-    public static final ForgeConfigSpec.IntValue MAX_BLUEPRINT_VOLUME;
-    public static final ForgeConfigSpec.IntValue MAX_BLUEPRINT_BLOCKS;
     public static final ForgeConfigSpec.IntValue MAX_BLUEPRINT_COMPRESSED_BYTES;
     public static final ForgeConfigSpec.IntValue MAX_BLUEPRINT_UNCOMPRESSED_BYTES;
 
@@ -93,15 +90,11 @@ public final class BuilderConfig {
         FULL_BLOCK_ENTITY_POLICY = builder
                 .comment("Who may place blueprint block-entity NBT: NEVER, CREATIVE_ONLY, OP_ONLY, or CREATIVE_OR_OP.")
                 .define("fullBlockEntityPolicy", FullBlockEntityPolicy.CREATIVE_OR_OP.name(), BuilderConfig::validPolicy);
-        MAX_BLUEPRINT_AXIS = builder
-                .defineInRange("maxBlueprintAxis", 256, 1, 2048);
-        MAX_BLUEPRINT_VOLUME = builder
-                .defineInRange("maxBlueprintVolume", 65_536, 1, 16_777_216);
-        MAX_BLUEPRINT_BLOCKS = builder
-                .defineInRange("maxBlueprintBlocks", 65_536, 1, 16_777_216);
         MAX_BLUEPRINT_COMPRESSED_BYTES = builder
+                .comment("Maximum compressed bytes accepted for one blueprint transfer (protocol memory-safety budget).")
                 .defineInRange("maxBlueprintCompressedBytes", 8_388_608, 1024, Integer.MAX_VALUE);
         MAX_BLUEPRINT_UNCOMPRESSED_BYTES = builder
+                .comment("Maximum decoded NBT bytes accepted for one blueprint transfer (allocation-safety budget).")
                 .defineInRange("maxBlueprintUncompressedBytes", 16_777_216, 1024, Integer.MAX_VALUE);
 
         builder.pop();

@@ -22,6 +22,7 @@ import net.minecraft.world.item.context.UseOnContext;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.CandleBlock;
 import net.minecraft.world.level.block.EntityBlock;
+import net.minecraft.world.level.block.GameMasterBlock;
 import net.minecraft.world.level.block.SeaPickleBlock;
 import net.minecraft.world.level.block.SlabBlock;
 import net.minecraft.world.level.block.SnowLayerBlock;
@@ -97,7 +98,8 @@ public final class BuilderOperationManager {
         BlockState override = offhand.getItem() instanceof BlockItem blockItem
                 ? blockItem.getBlock().defaultBlockState() : null;
         SurfacePlanner.Plan plan = SurfacePlanner.plan(level, hit.getBlockPos(), hit.getDirection(), mode,
-                RealmwrightData.matchMode(scepter), limit, override);
+                RealmwrightData.matchMode(scepter), limit, override,
+                mode == BuilderMode.BUILD && RealmwrightData.allowsReplacement(scepter));
         if (plan.candidates().isEmpty()) return Result.rejected("message.mydimension.builder.nothing_to_do");
         List<SurfacePlanner.Candidate> locked = lockSurfaceStates(player, plan.candidates(),
                 hit.getDirection(), mode);
@@ -274,6 +276,7 @@ public final class BuilderOperationManager {
         List<BuildAttempt> attempts = new ArrayList<>();
         ItemStack placementSource = player.getOffhandItem().copy();
         boolean free = isFree(player);
+        boolean allowReplacement = RealmwrightData.allowsReplacement(scepter);
         for (SurfacePlanner.Candidate candidate : candidates) {
             try {
                 BlockPos pos = candidate.target();
@@ -283,7 +286,7 @@ public final class BuilderOperationManager {
                 if (existing.equals(desired)) continue;
                 // Keep this pass cheap.  The authoritative collision/envelope check runs exactly
                 // once immediately before the edit, after any earlier mod callbacks in this batch.
-                if (!validStaticBuildEnvelope(player, pos, desired, existing)) {
+                if (!validStaticBuildEnvelope(player, pos, desired, existing, allowReplacement)) {
                     result.blocked++;
                     continue;
                 }
@@ -342,14 +345,16 @@ public final class BuilderOperationManager {
         }
 
         List<BuildAttempt> unresolved = processWithSingleRetry(attempts,
-                attempt -> placeBuildAttempt(player, pools, free, result, attempt));
+                attempt -> placeBuildAttempt(player, pools, free, result, attempt, allowReplacement));
         result.blocked += unresolved.size();
         stabilizeBuildBatch(level, result.successfulBuildPositions, captureHistory);
         if (captureHistory && !captureStableBuildHistory(level, batchBeforeImages, result)) {
-            restoreSnapshots(level, batchBeforeImages);
+            restoreSnapshotsWithoutDrops(level, batchBeforeImages);
             for (SupplyPool pool : pools) pool.resetAvailable();
             result.changed.clear();
             result.missing.clear();
+            result.credits.clear();
+            result.replacementDrops.clear();
             result.successfulBuildPositions.clear();
             result.sound = null;
             result.blocked += result.changedCount;
@@ -361,6 +366,9 @@ public final class BuilderOperationManager {
         }
         if (!unusedSupplies.isEmpty()) {
             dropOverflow(player, transactionId, BuilderMaterials.insert(player, scepter, unusedSupplies));
+        }
+        if (!result.replacementDrops.isEmpty()) {
+            settleBuildReplacementDrops(player, scepter, transactionId, result.replacementDrops);
         }
         result.offhandAfter = player.getOffhandItem().copy();
         return result;
@@ -596,17 +604,24 @@ public final class BuilderOperationManager {
      * or blocked/missing outcome exactly once.
      */
     private static boolean placeBuildAttempt(ServerPlayer player, List<SupplyPool> pools, boolean free,
-                                             Execution result, BuildAttempt attempt) {
+                                             Execution result, BuildAttempt attempt,
+                                             boolean allowReplacement) {
         ServerLevel level = player.serverLevel();
         BlockPos pos = attempt.candidate.target();
         BlockState desired = attempt.desired;
         SupplyPool pool = free ? null : findPool(pools, attempt.cost,
                 BuilderBlockCompatibility.constructionFallbacks(desired));
         int costCount = attempt.cost.getCount();
+        boolean destructiveReplacement;
         try {
             BlockState existing = level.getBlockState(pos);
             if (existing.equals(desired)) return true;
-            if (!validBuildEnvelope(player, pos, desired, existing)) {
+            if (!validBuildEnvelope(player, pos, desired, existing, allowReplacement)) {
+                result.blocked++;
+                return true;
+            }
+            destructiveReplacement = BuilderReplacementPolicy.requiresBreaking(existing);
+            if (destructiveReplacement && !mayDestroyForReplacement(player, pos, existing)) {
                 result.blocked++;
                 return true;
             }
@@ -628,8 +643,21 @@ public final class BuilderOperationManager {
 
         BlockState beforeState;
         BlockSnapshot forgeSnapshot;
+        Map<BlockPos, WorldDelta.Snapshot> replacementBeforeImages = Map.of();
         try {
             beforeState = level.getBlockState(pos);
+            destructiveReplacement = BuilderReplacementPolicy.requiresBreaking(beforeState);
+            if (!validBuildEnvelope(player, pos, desired, beforeState, allowReplacement)
+                    || destructiveReplacement && !mayDestroyForReplacement(player, pos, beforeState)) {
+                result.blocked++;
+                return true;
+            }
+            if (destructiveReplacement) {
+                // Break and placement callbacks may synchronously reshape a paired block or direct
+                // neighbour. Keep a current per-attempt image so a rejected placement can restore
+                // the complete replacement, even when transaction history is disabled.
+                replacementBeforeImages = snapshotReplacementArea(level, pos, beforeState);
+            }
             forgeSnapshot = BlockSnapshot.create(level.dimension(), level, pos);
         } catch (Throwable throwable) {
             result.blocked++;
@@ -638,13 +666,23 @@ public final class BuilderOperationManager {
             return true;
         }
         boolean placed = false;
+        List<ItemStack> replacementDrops = List.of();
         try {
+            if (destructiveReplacement) {
+                BuilderDropCapture.CaptureResult<Boolean> broken = BuilderDropCapture.capture(
+                        () -> destroyBlockForReplacement(player, pos));
+                if (!broken.value() || !level.getBlockState(pos).canBeReplaced()) {
+                    restoreSnapshotsWithoutDrops(level, replacementBeforeImages);
+                    result.blocked++;
+                    return true;
+                }
+                if (!player.isCreative()) replacementDrops = broken.drops();
+            }
             placed = level.setBlock(pos, desired, Block.UPDATE_ALL);
             if (placed) {
                 BlockEvent.EntityPlaceEvent event = new BlockEvent.EntityPlaceEvent(forgeSnapshot,
                         beforeState, player);
                 if (MinecraftForge.EVENT_BUS.post(event)) {
-                    forgeSnapshot.restore(true, false);
                     placed = false;
                 }
             }
@@ -656,23 +694,27 @@ public final class BuilderOperationManager {
             }
             if (placed && attempt.blockEntityTag != null
                     && !applyBlockEntityTag(player, pos, attempt.blockEntityTag)) {
-                forgeSnapshot.restore(true, false);
                 placed = false;
             }
             // A placement callback may synchronously replace or consume the block (for example a
             // powered TNT). Such side effects are not represented by this transaction, so never debit
             // material or record an air-to-air delta as a successful placement.
             if (placed && !level.getBlockState(pos).is(desired.getBlock())) {
-                forgeSnapshot.restore(true, false);
                 placed = false;
             }
         } catch (Throwable throwable) {
-            try { forgeSnapshot.restore(true, false); } catch (Throwable ignored) { }
             MyDimension.LOGGER.warn("Builder placement failed safely at {} in {}", pos,
                     level.dimension().location(), throwable);
             placed = false;
         }
         if (!placed) {
+            try {
+                if (destructiveReplacement) restoreSnapshotsWithoutDrops(level, replacementBeforeImages);
+                else forgeSnapshot.restore(true, false);
+            } catch (Throwable throwable) {
+                MyDimension.LOGGER.error("Builder could not restore rejected placement at {} in {}", pos,
+                        level.dimension().location(), throwable);
+            }
             result.blocked++;
             return true;
         }
@@ -682,11 +724,112 @@ public final class BuilderOperationManager {
                 consumed.forEach(stack -> addLedgerStack(result.debits, stack));
             }
         }
+        for (ItemStack drop : replacementDrops) {
+            if (drop.isEmpty()) continue;
+            result.replacementDrops.add(new PositionedDrop(pos.immutable(), drop.copy()));
+            if (result.captureHistory) addLedgerStack(result.credits, drop);
+        }
         BlockState successfulState = level.getBlockState(pos);
         result.successfulBuildPositions.add(pos.immutable());
         result.captureSound(pos, successfulState);
         result.changedCount++;
         return true;
+    }
+
+    private static boolean mayDestroyForReplacement(ServerPlayer player, BlockPos pos,
+                                                    BlockState existing) {
+        ServerLevel level = player.serverLevel();
+        // Adventure-mode CanDestroy eligibility is evaluated by Forge/ServerPlayerGameMode below;
+        // an unconditional mayBuild check here would incorrectly reject such authorized tools.
+        return !player.isSpectator() && level.mayInteract(player, pos)
+                && BuilderReplacementPolicy.canReplaceTarget(existing, level, pos,
+                true, player.isCreative());
+    }
+
+    /**
+     * Mirrors {@link net.minecraft.server.level.ServerPlayerGameMode#destroyBlock(BlockPos)} while
+     * deliberately treating every survival-breakable block as harvestable. The scepter is not a
+     * pickaxe, so vanilla's ordinary harvest gate would otherwise remove stone, ores, and modded
+     * tool-gated blocks without running their loot table at all. The original held stack is still
+     * supplied to the loot table, giving the normal unenchanted output and preserving mod hooks.
+     *
+     * <p>The Forge break event is posted exactly once here. Do not precede this method with an
+     * event-based permission probe: a protection mod may have non-idempotent listeners.</p>
+     */
+    private static boolean destroyBlockForReplacement(ServerPlayer player, BlockPos pos) {
+        ServerLevel level = player.serverLevel();
+        BlockState state = level.getBlockState(pos);
+        int experience = ForgeHooks.onBlockBreakEvent(level,
+                player.gameMode.getGameModeForPlayer(), player, pos);
+        if (experience == -1) return false;
+
+        BlockEntity blockEntity = level.getBlockEntity(pos);
+        Block block = state.getBlock();
+        if (block instanceof GameMasterBlock && !player.canUseGameMasterBlocks()) {
+            level.sendBlockUpdated(pos, state, state, Block.UPDATE_ALL);
+            return false;
+        }
+        ItemStack held = player.getMainHandItem();
+        if (held.onBlockStartBreak(pos, player)
+                || player.blockActionRestricted(level, pos,
+                player.gameMode.getGameModeForPlayer())) {
+            return false;
+        }
+
+        if (player.isCreative()) {
+            return removeReplacementBlock(level, player, pos, state, false);
+        }
+
+        ItemStack lootTool = held.copy();
+        held.mineBlock(level, state, pos, player);
+        if (held.isEmpty() && !lootTool.isEmpty()) {
+            net.minecraftforge.event.ForgeEventFactory.onPlayerDestroyItem(
+                    player, lootTool, InteractionHand.MAIN_HAND);
+        }
+        // Replacement is allowed only for states with survival destroy speed. Force the harvest
+        // gate so a non-tool scepter cannot suppress the block's otherwise-normal loot table.
+        boolean removed = removeReplacementBlock(level, player, pos, state, true);
+        if (removed) {
+            block.playerDestroy(level, player, pos, state, blockEntity, lootTool);
+            if (experience > 0) block.popExperience(level, pos, experience);
+        }
+        return removed;
+    }
+
+    private static boolean removeReplacementBlock(ServerLevel level, ServerPlayer player,
+                                                  BlockPos pos, BlockState state,
+                                                  boolean canHarvest) {
+        boolean removed = state.onDestroyedByPlayer(level, pos, player, canHarvest,
+                level.getFluidState(pos));
+        if (removed) state.getBlock().destroy(level, pos, state);
+        return removed;
+    }
+
+    private static Map<BlockPos, WorldDelta.Snapshot> snapshotReplacementArea(
+            ServerLevel level, BlockPos pos, BlockState state) {
+        Map<BlockPos, WorldDelta.Snapshot> snapshots = new java.util.LinkedHashMap<>();
+        for (BlockPos affected : buildStabilizationPositions(demolitionAffectedPositions(pos, state))) {
+            if (validLoadedPosition(level, affected)) {
+                snapshots.put(affected, WorldDelta.snapshot(level, affected));
+            }
+        }
+        return snapshots;
+    }
+
+    private static boolean restoreSnapshotsWithoutDrops(ServerLevel level,
+                                                        Map<BlockPos, WorldDelta.Snapshot> snapshots) {
+        try {
+            boolean restored = BuilderDropCapture.discardEntities(() -> restoreSnapshots(level, snapshots));
+            if (!restored) {
+                MyDimension.LOGGER.error("Builder could not restore a complete snapshot set in {}",
+                        level.dimension().location());
+            }
+            return restored;
+        } catch (RuntimeException exception) {
+            MyDimension.LOGGER.error("Builder snapshot restoration failed in {}",
+                    level.dimension().location(), exception);
+            return false;
+        }
     }
 
     /** Runs at most two passes; values returning false after pass two remain unresolved. */
@@ -759,13 +902,13 @@ public final class BuilderOperationManager {
                     capturedDrops = List.of();
                 }
             } catch (Throwable throwable) {
-                if (captureHistory) restoreSnapshots(level, beforeImages);
+                if (captureHistory) restoreSnapshotsWithoutDrops(level, beforeImages);
                 result.blocked++;
                 MyDimension.LOGGER.warn("Builder rolled back failed demolition at {}", pos, throwable);
                 continue;
             }
             if (!removed) {
-                if (captureHistory) restoreSnapshots(level, beforeImages);
+                if (captureHistory) restoreSnapshotsWithoutDrops(level, beforeImages);
                 result.blocked++;
                 continue;
             }
@@ -778,7 +921,7 @@ public final class BuilderOperationManager {
                         afterImages.put(affected, WorldDelta.snapshot(level, affected));
                     }
                 } catch (Throwable throwable) {
-                    restoreSnapshots(level, beforeImages);
+                    restoreSnapshotsWithoutDrops(level, beforeImages);
                     result.blocked++;
                     MyDimension.LOGGER.warn("Builder rolled back demolition at {} because its after-image failed",
                             pos, throwable);
@@ -860,6 +1003,20 @@ public final class BuilderOperationManager {
         }
     }
 
+    /** Stores successful replacement outputs in one material session and keeps overflow at its source. */
+    private static void settleBuildReplacementDrops(ServerPlayer player, ItemStack scepter,
+                                                     UUID transactionId, List<PositionedDrop> drops) {
+        List<ItemStack> offered = drops.stream().map(drop -> drop.stack.copy()).toList();
+        List<ItemStack> remainders = BuilderMaterials.insertAligned(player, scepter, offered);
+        ServerLevel level = player.serverLevel();
+        for (int index = 0; index < drops.size(); index++) {
+            ItemStack remainder = remainders.get(index);
+            if (!remainder.isEmpty()) {
+                dropOverflowAt(level, drops.get(index).pos, transactionId, List.of(remainder));
+            }
+        }
+    }
+
     /**
      * Removes a block without ServerLevel#destroyBlock's level-event 2001.
      * Level#removeBlock still restores the contained fluid and runs ordinary
@@ -917,6 +1074,17 @@ public final class BuilderOperationManager {
                         entry.getKey(), level.dimension().location(), throwable);
             }
         }
+        if (restored) {
+            for (Map.Entry<BlockPos, WorldDelta.Snapshot> entry : entries) {
+                WorldDelta.Snapshot snapshot = entry.getValue();
+                WorldDelta expected = new WorldDelta(entry.getKey(), snapshot.state(),
+                        snapshot.blockEntity(), snapshot.state(), snapshot.blockEntity());
+                if (!expected.matchesBefore(level)) {
+                    restored = false;
+                    break;
+                }
+            }
+        }
         return restored;
     }
 
@@ -925,25 +1093,28 @@ public final class BuilderOperationManager {
                                               BuilderTransaction.Type type, UUID transactionId,
                                               Execution execution, ServerLevel level) {
         if (execution.changed.isEmpty()) return true;
-        if (type == BuilderTransaction.Type.DEMOLISH) {
-            if (!BuilderMaterials.canAndRemove(player, scepter, execution.credits,
-                    transactionEntities(level, transactionId, execution.changed))) {
-                return false;
-            }
-            if (!restoreDeltas(level, execution.changed, true)) {
-                restoreDeltas(level, execution.changed, false);
-                BlockPos dropPos = execution.changed.get(0).pos();
-                dropOverflowAt(level, dropPos, transactionId,
-                        BuilderMaterials.insertPreservingOffhand(player, scepter, execution.credits));
-                return false;
-            }
-            player.setItemInHand(InteractionHand.OFF_HAND, execution.offhandBefore.copy());
-            return true;
+        boolean demolition = type == BuilderTransaction.Type.DEMOLISH;
+        if (!execution.credits.isEmpty()) {
+            List<net.minecraft.world.entity.item.ItemEntity> entities = transactionEntities(
+                    level, transactionId, execution.changed);
+            boolean reclaimed = demolition
+                    ? BuilderMaterials.canAndRemove(player, scepter, execution.credits, entities)
+                    : BuilderMaterials.canAndRemoveIncludingOffhand(
+                    player, scepter, execution.credits, entities);
+            if (!reclaimed) return false;
         }
-
         if (!restoreDeltas(level, execution.changed, true)) {
             restoreDeltas(level, execution.changed, false);
+            BlockPos dropPos = execution.changed.get(0).pos();
+            List<ItemStack> overflow = demolition
+                    ? BuilderMaterials.insertPreservingOffhand(player, scepter, execution.credits)
+                    : BuilderMaterials.insert(player, scepter, execution.credits);
+            dropOverflowAt(level, dropPos, transactionId, overflow);
             return false;
+        }
+        if (demolition) {
+            player.setItemInHand(InteractionHand.OFF_HAND, execution.offhandBefore.copy());
+            return true;
         }
         BlockPos dropPos = execution.changed.get(0).pos();
         dropOverflowAt(level, dropPos, transactionId,
@@ -1002,19 +1173,21 @@ public final class BuilderOperationManager {
     }
 
     private static boolean validBuildEnvelope(ServerPlayer player, BlockPos pos, BlockState desired,
-                                              BlockState existing) {
-        if (!validStaticBuildEnvelope(player, pos, desired, existing)) return false;
+                                              BlockState existing, boolean allowReplacement) {
+        if (!validStaticBuildEnvelope(player, pos, desired, existing, allowReplacement)) return false;
         // Match normal BlockItem placement semantics: no solid collision shape may intersect any
         // player, mob, vehicle or other collidable entity at the target, not merely the operator.
         return player.serverLevel().isUnobstructed(desired, pos, CollisionContext.empty());
     }
 
     private static boolean validStaticBuildEnvelope(ServerPlayer player, BlockPos pos, BlockState desired,
-                                                     BlockState existing) {
+                                                     BlockState existing, boolean allowReplacement) {
         ServerLevel level = player.serverLevel();
         WorldBorder border = level.getWorldBorder();
         if (pos.getY() < level.getMinBuildHeight() || pos.getY() >= level.getMaxBuildHeight()
-                || !border.isWithinBounds(pos) || !existing.canBeReplaced()
+                || !border.isWithinBounds(pos)
+                || !BuilderReplacementPolicy.canReplaceTarget(existing, level, pos,
+                allowReplacement, player.isCreative())
                 || desired.is(BuilderTags.CONSTRUCTION_PROTECTED)
                 || desired.is(BuilderTags.TRANSACTION_UNSAFE)) return false;
         return true;
@@ -1179,7 +1352,7 @@ public final class BuilderOperationManager {
         long estimate;
         try {
             estimate = estimateHistoryBytes(player, type, candidates, face, allowOffhandOverride,
-                    blockEntityTags);
+                    blockEntityTags, RealmwrightData.allowsReplacement(scepter));
         } catch (RuntimeException exception) {
             MyDimension.LOGGER.warn("Unable to estimate builder transaction {} before execution", transactionId,
                     exception);
@@ -1194,7 +1367,8 @@ public final class BuilderOperationManager {
     private static long estimateHistoryBytes(ServerPlayer player, BuilderTransaction.Type type,
                                              List<SurfacePlanner.Candidate> candidates, Direction face,
                                              boolean allowOffhandOverride,
-                                             Map<BlockPos, net.minecraft.nbt.CompoundTag> blockEntityTags) {
+                                             Map<BlockPos, net.minecraft.nbt.CompoundTag> blockEntityTags,
+                                             boolean allowReplacement) {
         ServerLevel level = player.serverLevel();
         long estimate = 4_096L + 2L * stackBytes(player.getOffhandItem());
         java.util.LinkedHashSet<BlockPos> buildTargets = new java.util.LinkedHashSet<>();
@@ -1247,6 +1421,11 @@ public final class BuilderOperationManager {
             long entry = 512L + Integer.toUnsignedLong(predicted.save().sizeInBytes());
             entry = saturatedAdd(entry, stackBytes(constructionCost(afterState)) + 128L);
             entry = saturatedAdd(entry, tagBytes(afterBlockEntity));
+            if (allowReplacement && BuilderReplacementPolicy.requiresBreaking(beforeState)) {
+                // A container's retained before-image and its item outputs may both carry the
+                // complete inventory NBT. Mirror demolition's conservative credit-ledger reserve.
+                entry = saturatedAdd(entry, 2L * tagBytes(before.blockEntity()));
+            }
             estimate = saturatedAdd(estimate, entry);
         }
         if (type != BuilderTransaction.Type.DEMOLISH && !buildTargets.isEmpty()) {
@@ -1394,6 +1573,7 @@ public final class BuilderOperationManager {
         private final List<PendingBuildData.Entry> missing = new ArrayList<>();
         private final List<ItemStack> debits = new ArrayList<>();
         private final List<ItemStack> credits = new ArrayList<>();
+        private final List<PositionedDrop> replacementDrops = new ArrayList<>();
         private final java.util.LinkedHashSet<BlockPos> successfulBuildPositions =
                 new java.util.LinkedHashSet<>();
         private final ItemStack offhandBefore;

@@ -24,9 +24,9 @@ import java.util.List;
 import java.util.UUID;
 
 public class ModNetwork {
-    // BuilderCommandPacket USE gained the physical-Shift interaction override bit. Older v4
-    // peers would otherwise leave/read one byte at the wrong packet boundary.
-    private static final String PROTOCOL_VERSION = "5";
+    // Builder settings snapshots and commands gained the replacement-policy bit/action. Older v5
+    // peers would otherwise read a different packet shape and must not join this protocol.
+    private static final String PROTOCOL_VERSION = "6";
 
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(MyDimension.MOD_ID, "main"),

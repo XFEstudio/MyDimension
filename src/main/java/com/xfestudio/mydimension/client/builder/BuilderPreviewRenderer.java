@@ -5,6 +5,7 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexBuffer;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.ShaderInstance;
@@ -72,21 +73,26 @@ public final class BuilderPreviewRenderer {
         }
 
         BuilderClientEvents.updateControlTargetForRender(minecraft);
-        BuilderPreviewState.get().updateHoveredTarget(minecraft, event.getPartialTick(),
-                Math.max(1, BuilderClientServices.snapshot().reach()));
-        BuilderPreviewState.Snapshot snapshot = BuilderPreviewState.get().snapshot();
+        BuilderPreviewState previewState = BuilderPreviewState.get();
+        BuilderPreviewState.Snapshot snapshot = previewState.snapshot();
         if (snapshot != null && !minecraft.level.dimension().equals(snapshot.dimension())) {
             SECTION_CACHE.clear();
             FOCUSED_OUTLINE_CACHE.clear();
             DYNAMIC_FOCUS_ANIMATION.clear();
             snapshot = null;
         }
-        BuilderPreviewState.Candidate candidate = BuilderPreviewState.get().controlCandidate();
+        BuilderPreviewVisibility visibility = BuilderPreviewVisibility.forModifiers(
+                Screen.hasControlDown(), Screen.hasAltDown(),
+                snapshot != null && snapshot.blueprintPreview());
+        previewState.updateHoveredTarget(minecraft, event.getPartialTick(),
+                Math.max(1, BuilderClientServices.snapshot().reach()), visibility);
+        BuilderPreviewState.Candidate candidate = previewState.controlCandidate();
         if (candidate != null && !minecraft.level.dimension().equals(candidate.dimension())) {
             candidate = null;
         }
         if (snapshot == null && candidate == null
-                && BuilderAnchorPreviewTracker.positions(minecraft.level).isEmpty()) return;
+                && (!visibility.showsAnchors()
+                || BuilderAnchorPreviewTracker.positions(minecraft.level).isEmpty())) return;
 
         SECTION_CACHE.advance(snapshot, CELLS_PREPARED_PER_FRAME);
         Vec3 camera = event.getCamera().getPosition();
@@ -100,7 +106,9 @@ public final class BuilderPreviewRenderer {
         BuilderPreviewSectionMeshCache.ModelResidency modelResidency =
                 SECTION_CACHE.modelResidency(camera,
                         (double) FULL_MODEL_DISTANCE * FULL_MODEL_DISTANCE);
-        List<BuilderPreviewSectionMeshCache.SectionMesh> visibleSections = renderedSnapshot == null
+        boolean showCachedCells = renderedSnapshot != null
+                && visibility.showsCachedCells(renderedSnapshot.blueprintPreview());
+        List<BuilderPreviewSectionMeshCache.SectionMesh> visibleSections = !showCachedCells
                 ? List.of() : SECTION_CACHE.visibleSections(
                         event.getFrustum(), camera, previewDistanceSqr);
         SECTION_CACHE.prepareVisibleSections(minecraft, modelResidency, camera,
@@ -108,7 +116,12 @@ public final class BuilderPreviewRenderer {
         Set<BuilderPreviewSectionMeshCache.SectionKey> drawableGhostSections =
                 modelResidency.drawableGhostSections();
         BuilderPreviewState.Focus focus = BuilderPreviewState.get().focus();
-        if (focus != null && focus.kind() != BuilderPreviewState.FocusKind.CANDIDATE
+        if (focus != null && !visibility.showsFocus(focus.kind())) {
+            focus = null;
+        }
+        if (focus != null && visibility.showsCachedCells(snapshot != null
+                && snapshot.blueprintPreview())
+                && focus.kind() != BuilderPreviewState.FocusKind.CANDIDATE
                 && !SECTION_CACHE.represents(snapshot)) {
             // The hit-test indexes already point at the newest immutable state, whereas section
             // VBOs deliberately keep rendering the previous complete generation during upload.
@@ -120,46 +133,59 @@ public final class BuilderPreviewRenderer {
                 && focus.kind() == BuilderPreviewState.FocusKind.MISSING
                 ? focus.missingGroup() : null;
         long animationTime = System.nanoTime();
-        FOCUSED_OUTLINE_CACHE.synchronize(focusedMissingGroup, animationTime);
+        if (visibility == BuilderPreviewVisibility.NORMAL) {
+            FOCUSED_OUTLINE_CACHE.synchronize(focusedMissingGroup, animationTime);
+        }
         DYNAMIC_FOCUS_ANIMATION.update(focus != null
                 && focus.kind() != BuilderPreviewState.FocusKind.MISSING ? focus : null,
                 animationTime);
-        FOCUSED_OUTLINE_CACHE.prepare(event.getFrustum(), camera, previewDistanceSqr);
+        if (visibility == BuilderPreviewVisibility.NORMAL) {
+            FOCUSED_OUTLINE_CACHE.prepare(event.getFrustum(), camera, previewDistanceSqr);
+        }
 
         PoseStack poseStack = event.getPoseStack();
         poseStack.pushPose();
         poseStack.translate(-camera.x, -camera.y, -camera.z);
         try {
-            drawCachedSections(poseStack, event, visibleSections,
-                    BuilderPreviewRenderTypes.ghostModel(),
-                    section -> section.ghostBuffers(drawableGhostSections),
-                    true, 1.0F);
-            drawSpecialGhostSections(poseStack, event, visibleSections,
-                    drawableGhostSections);
-            BuilderPreviewRenderTypes.updateWaveUniforms();
-            drawCachedSections(poseStack, event, visibleSections,
-                    BuilderPreviewRenderTypes.projectionWave(),
-                    BuilderPreviewSectionMeshCache.SectionMesh::waveBuffers, true, 1.0F);
+            if (showCachedCells) {
+                drawCachedSections(poseStack, event, visibleSections,
+                        BuilderPreviewRenderTypes.ghostModel(),
+                        section -> section.ghostBuffers(drawableGhostSections),
+                        true, 1.0F);
+                drawSpecialGhostSections(poseStack, event, visibleSections,
+                        drawableGhostSections);
+                BuilderPreviewRenderTypes.updateWaveUniforms();
+                drawCachedSections(poseStack, event, visibleSections,
+                        BuilderPreviewRenderTypes.projectionWave(),
+                        BuilderPreviewSectionMeshCache.SectionMesh::waveBuffers, true, 1.0F);
 
-            // Draw the faint pass only where world geometry occludes the frame. Keeping it
-            // off visible pixels avoids two coplanar outline passes under temporal shaders.
-            drawCachedSections(poseStack, event, visibleSections,
-                    BuilderPreviewRenderTypes.outlineXray(),
-                    section -> section.outlineBuffer() == null
-                            ? List.of() : List.of(section.outlineBuffer()), false, 0.16F);
-            drawCachedSections(poseStack, event, visibleSections,
-                    BuilderPreviewRenderTypes.outline(),
-                    section -> section.outlineBuffer() == null
-                            ? List.of() : List.of(section.outlineBuffer()), false, 1.0F);
+                // Draw the faint pass only where world geometry occludes the frame. Keeping it
+                // off visible pixels avoids two coplanar outline passes under temporal shaders.
+                drawCachedSections(poseStack, event, visibleSections,
+                        BuilderPreviewRenderTypes.outlineXray(),
+                        section -> section.outlineBuffer() == null
+                                ? List.of() : List.of(section.outlineBuffer()), false, 0.16F);
+                drawCachedSections(poseStack, event, visibleSections,
+                        BuilderPreviewRenderTypes.outline(),
+                        section -> section.outlineBuffer() == null
+                                ? List.of() : List.of(section.outlineBuffer()), false, 1.0F);
+            }
 
-            renderDynamicOutlines(minecraft, poseStack, renderedSnapshot, candidate,
-                    camera, previewDistanceSqr, BuilderPreviewRenderTypes.outlineXray(), 0.16F);
-            renderDynamicOutlines(minecraft, poseStack, renderedSnapshot, candidate,
-                    camera, previewDistanceSqr, BuilderPreviewRenderTypes.outline(), 1.0F);
-            FOCUSED_OUTLINE_CACHE.draw(poseStack, event.getProjectionMatrix(),
-                    BuilderPreviewRenderTypes.outlineXray(), 0.16F);
-            FOCUSED_OUTLINE_CACHE.draw(poseStack, event.getProjectionMatrix(),
-                    BuilderPreviewRenderTypes.outline(), 1.0F);
+            BuilderPreviewState.Snapshot dynamicSnapshot =
+                    visibility == BuilderPreviewVisibility.BLUEPRINT_SELECTION_ONLY
+                            ? snapshot : renderedSnapshot;
+            renderDynamicOutlines(minecraft, poseStack, dynamicSnapshot, candidate,
+                    camera, previewDistanceSqr, BuilderPreviewRenderTypes.outlineXray(), 0.16F,
+                    visibility);
+            renderDynamicOutlines(minecraft, poseStack, dynamicSnapshot, candidate,
+                    camera, previewDistanceSqr, BuilderPreviewRenderTypes.outline(), 1.0F,
+                    visibility);
+            if (visibility == BuilderPreviewVisibility.NORMAL) {
+                FOCUSED_OUTLINE_CACHE.draw(poseStack, event.getProjectionMatrix(),
+                        BuilderPreviewRenderTypes.outlineXray(), 0.16F);
+                FOCUSED_OUTLINE_CACHE.draw(poseStack, event.getProjectionMatrix(),
+                        BuilderPreviewRenderTypes.outline(), 1.0F);
+            }
         } finally {
             RenderSystem.setShaderColor(1.0F, 1.0F, 1.0F, 1.0F);
             VertexBuffer.unbind();
@@ -254,21 +280,25 @@ public final class BuilderPreviewRenderer {
                                               @Nullable BuilderPreviewState.Snapshot snapshot,
                                               @Nullable BuilderPreviewState.Candidate candidate,
                                               Vec3 camera, double maximumDistanceSqr,
-                                              RenderType renderType, float alphaScale) {
+                                              RenderType renderType, float alphaScale,
+                                              BuilderPreviewVisibility visibility) {
         MultiBufferSource.BufferSource buffers = minecraft.renderBuffers().bufferSource();
         VertexConsumer quads = buffers.getBuffer(renderType);
         PoseStack.Pose pose = poseStack.last();
 
-        for (BlockPos anchor : BuilderAnchorPreviewTracker.positions(minecraft.level)) {
-            AABB bounds = new AABB(anchor).inflate(0.008D);
-            if (withinDistance(bounds, camera, maximumDistanceSqr)) {
-                BuilderPreviewGeometry.emitBox(pose, quads, bounds,
-                        BuilderPreviewState.Kind.ANCHOR, NORMAL_OUTLINE_WIDTH,
-                        alphaScale, false);
+        if (visibility.showsAnchors()) {
+            for (BlockPos anchor : BuilderAnchorPreviewTracker.positions(minecraft.level)) {
+                AABB bounds = new AABB(anchor).inflate(0.008D);
+                if (withinDistance(bounds, camera, maximumDistanceSqr)) {
+                    BuilderPreviewGeometry.emitBox(pose, quads, bounds,
+                            BuilderPreviewState.Kind.ANCHOR, NORMAL_OUTLINE_WIDTH,
+                            alphaScale, false);
+                }
             }
         }
 
-        BuilderPreviewState.Selection selection = snapshot == null || snapshot.blueprintPreview()
+        BuilderPreviewState.Selection selection = snapshot == null
+                || !visibility.showsSelection(snapshot.blueprintPreview())
                 ? null : snapshot.selection();
         if (selection != null && selection.active()) {
             if (selection.first() != null) {
@@ -297,7 +327,8 @@ public final class BuilderPreviewRenderer {
 
         // Follow the same fully published generation as the cached cell VBOs. Reading the newest
         // state here would move the outer frame before its replacement geometry is ready.
-        AABB blueprintBounds = blueprintBounds(snapshot);
+        AABB blueprintBounds = visibility.showsDeploymentFrame()
+                ? blueprintBounds(snapshot) : null;
         if (blueprintBounds != null && withinDistance(blueprintBounds, camera, maximumDistanceSqr)) {
             BuilderPreviewGeometry.emitBox(pose, quads, blueprintBounds.inflate(0.004D),
                     BuilderPreviewState.Kind.BLUEPRINT, NORMAL_OUTLINE_WIDTH,
@@ -314,7 +345,8 @@ public final class BuilderPreviewRenderer {
 
         BuilderPreviewState.Focus focus = DYNAMIC_FOCUS_ANIMATION.renderedFocus();
         float focusAmount = DYNAMIC_FOCUS_ANIMATION.smoothAmount();
-        if (focus != null && focusAmount > 0.001F
+        if (focus != null && visibility.showsFocus(focus.kind())
+                && focusAmount > 0.001F
                 && withinDistance(focus.bounds(), camera, maximumDistanceSqr)) {
             BuilderPreviewState.Kind color = focus.kind() == BuilderPreviewState.FocusKind.MISSING
                     ? BuilderPreviewState.Kind.MISSING : BuilderPreviewState.Kind.BLUEPRINT;

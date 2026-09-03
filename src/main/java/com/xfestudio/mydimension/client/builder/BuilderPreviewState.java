@@ -542,9 +542,16 @@ public final class BuilderPreviewState {
     /**
      * Updates the yellow/blue virtual-cell under the crosshair. A voxel DDA
      * visits at most a few hundred positions at 64-block reach and performs
-     * O(1) lookups, rather than scanning a 65k-cell blueprint every tick.
+     * O(1) lookups, rather than scanning the whole blueprint every tick.
      */
     public void updateHoveredTarget(Minecraft minecraft, float partialTick, double maximumDistance) {
+        updateHoveredTarget(minecraft, partialTick, maximumDistance,
+                BuilderPreviewVisibility.NORMAL);
+    }
+
+    /** Applies the active Ctrl context to hit testing as well as drawing hidden layers. */
+    void updateHoveredTarget(Minecraft minecraft, float partialTick, double maximumDistance,
+                             BuilderPreviewVisibility visibility) {
         PublishedPreview frame = published;
         Snapshot value = frame == null ? null : frame.snapshot();
         Candidate candidate = controlCandidate;
@@ -561,10 +568,13 @@ public final class BuilderPreviewState {
             return;
         }
         Map<BlockPos, MissingTarget> groups = snapshotVisible
+                && visibility.showsFocus(FocusKind.MISSING)
                 ? frame.interactiveGroups() : Map.of();
         AABB visibleDeploymentBounds = snapshotVisible && value.blueprintPreview()
+                && visibility.showsDeploymentFrame()
                 ? frame.blueprintBounds() : null;
-        AABB visibleSelectionBounds = snapshotVisible && !value.blueprintPreview()
+        AABB visibleSelectionBounds = snapshotVisible
+                && visibility.showsSelection(value.blueprintPreview())
                 && value.selection() != null
                 ? value.selection().bounds() : null;
         if (groups.isEmpty() && visibleDeploymentBounds == null

@@ -4,11 +4,14 @@ import com.xfestudio.mydimension.builder.history.BuilderHistoryData;
 import com.xfestudio.mydimension.builder.history.BuilderTransaction;
 import com.xfestudio.mydimension.builder.history.WorldDelta;
 import net.minecraft.core.BlockPos;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.GameMasterBlock;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.common.util.BlockSnapshot;
@@ -52,27 +55,35 @@ public final class BuilderHistoryService {
         if (!mayRestore(player, level, transaction.worldDeltas(), true)) {
             return conflict(player, history, transaction, "message.mydimension.builder.undo_world_conflict");
         }
-        if (transaction.type() == BuilderTransaction.Type.DEMOLISH) {
-            if (!ItemStack.matches(player.getOffhandItem(), transaction.offhandAfter())) {
-                return conflict(player, history, transaction, "message.mydimension.builder.undo_tool_conflict");
-            }
-            if (!BuilderMaterials.canAndRemove(player, scepter, transaction.dropCredits(),
-                    transactionEntities(level, transaction))) {
+        boolean demolition = transaction.type() == BuilderTransaction.Type.DEMOLISH;
+        if (demolition && !ItemStack.matches(player.getOffhandItem(), transaction.offhandAfter())) {
+            return conflict(player, history, transaction, "message.mydimension.builder.undo_tool_conflict");
+        }
+        if (!transaction.dropCredits().isEmpty()) {
+            List<ItemEntity> entities = transactionEntities(level, transaction);
+            boolean reclaimed = demolition
+                    ? BuilderMaterials.canAndRemove(player, scepter, transaction.dropCredits(), entities)
+                    : BuilderMaterials.canAndRemoveIncludingOffhand(
+                    player, scepter, transaction.dropCredits(), entities);
+            if (!reclaimed) {
                 return conflict(player, history, transaction, "message.mydimension.builder.undo_items_conflict");
             }
         }
 
         if (!restoreAll(level, transaction.worldDeltas(), true)) {
             restoreAll(level, transaction.worldDeltas(), false);
-            if (transaction.type() == BuilderTransaction.Type.DEMOLISH) {
+            if (!transaction.dropCredits().isEmpty()) {
                 BlockPos pos = transaction.worldDeltas().isEmpty() ? player.blockPosition()
                         : transaction.worldDeltas().get(0).pos();
-                spawnOverflow(player, BuilderMaterials.insertPreservingOffhand(player, scepter,
-                        transaction.dropCredits()), transaction.id(), pos);
+                List<ItemStack> overflow = demolition
+                        ? BuilderMaterials.insertPreservingOffhand(player, scepter,
+                        transaction.dropCredits())
+                        : BuilderMaterials.insert(player, scepter, transaction.dropCredits());
+                spawnOverflow(player, overflow, transaction.id(), pos);
             }
             return conflict(player, history, transaction, "message.mydimension.builder.undo_restore_conflict");
         }
-        if (transaction.type() == BuilderTransaction.Type.DEMOLISH) {
+        if (demolition) {
             player.setItemInHand(net.minecraft.world.InteractionHand.OFF_HAND, transaction.offhandBefore());
         } else {
             spawnOverflow(player, BuilderMaterials.insert(player, scepter, transaction.materialDebits()));
@@ -128,11 +139,15 @@ public final class BuilderHistoryService {
         }
         if (transaction.type() == BuilderTransaction.Type.DEMOLISH) {
             player.setItemInHand(net.minecraft.world.InteractionHand.OFF_HAND, transaction.offhandAfter());
+        }
+        if (!transaction.dropCredits().isEmpty()) {
             BlockPos dropPos = transaction.worldDeltas().isEmpty() ? player.blockPosition()
                     : transaction.worldDeltas().get(0).pos();
-            spawnOverflow(player, BuilderMaterials.insertPreservingOffhand(player, scepter,
-                            transaction.dropCredits()),
-                    transaction.id(), dropPos);
+            List<ItemStack> overflow = transaction.type() == BuilderTransaction.Type.DEMOLISH
+                    ? BuilderMaterials.insertPreservingOffhand(player, scepter,
+                    transaction.dropCredits())
+                    : BuilderMaterials.insert(player, scepter, transaction.dropCredits());
+            spawnOverflow(player, overflow, transaction.id(), dropPos);
         }
         history.markRedone(player.getUUID(), RealmwrightData.id(scepter));
         return feedback(player, true, "message.mydimension.builder.redo_ok");
@@ -168,10 +183,29 @@ public final class BuilderHistoryService {
             for (WorldDelta delta : deltas) {
                 BlockState current = level.getBlockState(delta.pos());
                 BlockState target = restoreBefore ? delta.beforeState() : delta.afterState();
+                CompoundTag targetBlockEntity = restoreBefore
+                        ? delta.beforeBlockEntity() : delta.afterBlockEntity();
+
+                if (!level.mayInteract(player, delta.pos())
+                        || player.blockActionRestricted(level, delta.pos(),
+                        player.gameMode.getGameModeForPlayer())) {
+                    return false;
+                }
+                if (!player.canUseGameMasterBlocks()
+                        && (requiresGameMasterAccess(current, level.getBlockEntity(delta.pos()), null,
+                        delta.pos())
+                        || requiresGameMasterAccess(target, null, targetBlockEntity, delta.pos()))) {
+                    return false;
+                }
 
                 // Replacements need both permissions: authorization to remove the current block and to
                 // place the recorded target.  This is deliberately strict for same-block NBT rewrites too.
                 if (!current.isAir()) {
+                    if (!current.equals(target)
+                            && !BuilderReplacementPolicy.canReplaceTarget(current, level, delta.pos(),
+                            true, player.isCreative())) {
+                        return false;
+                    }
                     BlockEvent.BreakEvent breakEvent = new BlockEvent.BreakEvent(level, delta.pos(), current, player);
                     if (MinecraftForge.EVENT_BUS.post(breakEvent)) return false;
                 }
@@ -191,6 +225,15 @@ public final class BuilderHistoryService {
         } catch (RuntimeException exception) {
             return false;
         }
+    }
+
+    private static boolean requiresGameMasterAccess(BlockState state, BlockEntity liveBlockEntity,
+                                                     CompoundTag savedBlockEntity, BlockPos pos) {
+        if (state.getBlock() instanceof GameMasterBlock) return true;
+        if (liveBlockEntity != null && liveBlockEntity.onlyOpCanSetNbt()) return true;
+        if (savedBlockEntity == null) return false;
+        BlockEntity restored = BlockEntity.loadStatic(pos, state, savedBlockEntity.copy());
+        return restored != null && restored.onlyOpCanSetNbt();
     }
 
     /** Place-event view whose target is available without a speculative world write. */

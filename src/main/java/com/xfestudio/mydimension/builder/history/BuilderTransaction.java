@@ -11,6 +11,7 @@ import net.minecraft.world.level.Level;
 import net.minecraft.core.registries.Registries;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.UUID;
 
@@ -133,8 +134,10 @@ public final class BuilderTransaction {
                 || state != State.APPLIED || continuation.state != State.APPLIED) {
             throw new IllegalArgumentException("Transaction continuation does not match");
         }
-        List<WorldDelta> deltas = new ArrayList<>(worldDeltas);
-        deltas.addAll(continuation.worldDeltas);
+        LinkedHashMap<net.minecraft.core.BlockPos, WorldDelta> deltasByPosition = new LinkedHashMap<>();
+        worldDeltas.forEach(delta -> mergeDelta(deltasByPosition, delta));
+        continuation.worldDeltas.forEach(delta -> mergeDelta(deltasByPosition, delta));
+        List<WorldDelta> deltas = List.copyOf(deltasByPosition.values());
         List<ItemStack> debits = new ArrayList<>(materialDebits);
         debits.addAll(continuation.materialDebits);
         List<ItemStack> credits = new ArrayList<>(dropCredits);
@@ -142,6 +145,18 @@ public final class BuilderTransaction {
         long combinedEstimate = saturatedAdd(estimatedSizeBytes(), continuation.estimatedSizeBytes());
         return new BuilderTransaction(id, wandId, dimension, type, createdAt, deltas, debits, credits,
                 offhandBefore, continuation.offhandAfter, State.APPLIED, combinedEstimate, true);
+    }
+
+    /** Retains the first observed before-image and the last observed after-image for each position. */
+    private static void mergeDelta(LinkedHashMap<net.minecraft.core.BlockPos, WorldDelta> deltas,
+                                   WorldDelta next) {
+        WorldDelta first = deltas.get(next.pos());
+        if (first == null) {
+            deltas.put(next.pos(), next);
+            return;
+        }
+        deltas.put(next.pos(), new WorldDelta(next.pos(), first.beforeState(), first.beforeBlockEntity(),
+                next.afterState(), next.afterBlockEntity()));
     }
 
     public CompoundTag save() {

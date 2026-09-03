@@ -90,7 +90,6 @@ public final class BlueprintServerService {
         }
         try {
             BlueprintSelectionStore.Selection selection = requireSelection(player, first, second);
-            validateSelectionBounds(first, second);
             BlueprintSaveMode effectiveMode = mode;
             if (mode == BlueprintSaveMode.FULL && !mayUseFullData(player)) {
                 effectiveMode = BlueprintSaveMode.BLOCKS_ONLY;
@@ -99,7 +98,6 @@ public final class BlueprintServerService {
             }
             BlueprintData blueprint = BlueprintCapture.capture(player.serverLevel(), player, first, second,
                     effectiveMode, name);
-            validateConfiguredLimits(blueprint);
             byte[] compressed = BlueprintIo.encode(blueprint,
                     BuilderConfig.MAX_BLUEPRINT_UNCOMPRESSED_BYTES.get(),
                     BuilderConfig.MAX_BLUEPRINT_COMPRESSED_BYTES.get());
@@ -160,7 +158,6 @@ public final class BlueprintServerService {
             BlueprintData blueprint = BlueprintIo.decode(compressed,
                     BuilderConfig.MAX_BLUEPRINT_COMPRESSED_BYTES.get(),
                     BuilderConfig.MAX_BLUEPRINT_UNCOMPRESSED_BYTES.get());
-            validateConfiguredLimits(blueprint);
             BlueprintServerCache.Entry entry = cache.put(player, blueprint, compressed, server.getTickCount());
             sendResult(player, transferId, true, entry.token(), "Blueprint ready");
         } catch (Exception exception) {
@@ -375,27 +372,6 @@ public final class BlueprintServerService {
             case OP_ONLY -> player.hasPermissions(2);
             case CREATIVE_OR_OP -> player.isCreative() || player.hasPermissions(2);
         };
-    }
-
-    private static void validateSelectionBounds(BlockPos first, BlockPos second) {
-        long x = Math.abs((long) first.getX() - second.getX()) + 1L;
-        long y = Math.abs((long) first.getY() - second.getY()) + 1L;
-        long z = Math.abs((long) first.getZ() - second.getZ()) + 1L;
-        long maxAxis = Math.min(BlueprintLimits.MAX_AXIS, BuilderConfig.MAX_BLUEPRINT_AXIS.get());
-        long maxVolume = Math.min(BlueprintLimits.MAX_VOLUME, BuilderConfig.MAX_BLUEPRINT_VOLUME.get());
-        if (x > maxAxis || y > maxAxis || z > maxAxis || x * y * z > maxVolume) {
-            throw new IllegalArgumentException("Selection exceeds the configured blueprint limit");
-        }
-    }
-
-    private static void validateConfiguredLimits(BlueprintData blueprint) {
-        int maxAxis = Math.min(BlueprintLimits.MAX_AXIS, BuilderConfig.MAX_BLUEPRINT_AXIS.get());
-        int maxVolume = Math.min(BlueprintLimits.MAX_VOLUME, BuilderConfig.MAX_BLUEPRINT_VOLUME.get());
-        int maxBlocks = Math.min(BlueprintLimits.MAX_BLOCKS, BuilderConfig.MAX_BLUEPRINT_BLOCKS.get());
-        if (blueprint.sizeX() > maxAxis || blueprint.sizeY() > maxAxis || blueprint.sizeZ() > maxAxis
-                || blueprint.volume() > maxVolume || blueprint.blocks().size() > maxBlocks) {
-            throw new IllegalArgumentException("Blueprint exceeds the configured content limit");
-        }
     }
 
     private boolean hasWorkConflict(ServerPlayer player) {

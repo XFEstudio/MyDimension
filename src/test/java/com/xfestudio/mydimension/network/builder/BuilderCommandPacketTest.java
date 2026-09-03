@@ -25,6 +25,18 @@ class BuilderCommandPacketTest {
         assertFalse(java.util.Arrays.equals(shifted, ordinary));
     }
 
+    @Test
+    void replacementSettingPacketRoundTripPreservesTheChoice() {
+        byte[] enabled = encode(BuilderCommandPacket.setAllowReplacement(true));
+        byte[] disabled = encode(BuilderCommandPacket.setAllowReplacement(false));
+
+        BuilderCommandPacket decoded = BuilderCommandPacket.decode(
+                new FriendlyByteBuf(Unpooled.wrappedBuffer(enabled)));
+
+        assertArrayEquals(enabled, encode(decoded));
+        assertFalse(java.util.Arrays.equals(enabled, disabled));
+    }
+
     private static byte[] encode(BuilderCommandPacket packet) {
         FriendlyByteBuf buffer = new FriendlyByteBuf(Unpooled.buffer());
         BuilderCommandPacket.encode(packet, buffer);

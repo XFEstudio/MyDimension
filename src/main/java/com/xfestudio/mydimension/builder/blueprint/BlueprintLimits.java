@@ -1,16 +1,13 @@
 package com.xfestudio.mydimension.builder.blueprint;
 
 /**
- * Hard safety limits shared by local files and network transfers.
- * Server configuration may impose lower limits, never higher ones.
+ * Hard protocol and allocation-safety budgets shared by local files and network transfers.
+ * Blueprint geometry and non-air block counts are deliberately not capped here.
  */
 public final class BlueprintLimits {
     public static final int FORMAT_VERSION = 1;
-    public static final int MAX_AXIS = 256;
-    public static final int MAX_VOLUME = 65_536;
-    public static final int MAX_BLOCKS = 65_536;
     public static final int MAX_PALETTE = 8_192;
-    public static final int MAX_BLOCK_ENTITIES = MAX_BLOCKS;
+    public static final int MAX_BLOCK_ENTITIES = 65_536;
     public static final int MAX_BLOCK_ENTITY_BYTES = 256 * 1024;
     public static final int MAX_BLOCK_ENTITY_TOTAL_BYTES = 8 * 1024 * 1024;
     public static final int MAX_UNCOMPRESSED_BYTES = 16 * 1024 * 1024;

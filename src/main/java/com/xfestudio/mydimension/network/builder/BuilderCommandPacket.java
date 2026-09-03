@@ -86,6 +86,11 @@ public final class BuilderCommandPacket {
                 enabled ? 1 : 0, 0, null, null, null);
     }
 
+    public static BuilderCommandPacket setAllowReplacement(boolean enabled) {
+        return new BuilderCommandPacket(Action.SET_ALLOW_REPLACEMENT, null, null,
+                enabled ? 1 : 0, 0, null, null, null);
+    }
+
     public static BuilderCommandPacket use(Target target) {
         return use(target, false);
     }
@@ -147,7 +152,7 @@ public final class BuilderCommandPacket {
                 buffer.writeVarInt(packet.first);
                 buffer.writeVarInt(packet.second);
             }
-            case SET_HISTORY_RECORDING -> buffer.writeBoolean(packet.first != 0);
+            case SET_HISTORY_RECORDING, SET_ALLOW_REPLACEMENT -> buffer.writeBoolean(packet.first != 0);
             case USE -> {
                 packet.target.write(buffer);
                 buffer.writeBoolean(packet.first != 0);
@@ -180,6 +185,7 @@ public final class BuilderCommandPacket {
             case SET_MATCH -> setMatch(buffer.readEnum(SurfaceMatchMode.class));
             case SET_LIMITS -> setLimits(buffer.readVarInt(), buffer.readVarInt());
             case SET_HISTORY_RECORDING -> setHistoryRecording(buffer.readBoolean());
+            case SET_ALLOW_REPLACEMENT -> setAllowReplacement(buffer.readBoolean());
             case USE -> use(Target.read(buffer), buffer.readBoolean());
             case RESUME -> resume(readOptionalUuid(buffer));
             case CANCEL -> cancel(readOptionalUuid(buffer));
@@ -246,6 +252,7 @@ public final class BuilderCommandPacket {
                         BuilderRuntime.settings().maxDemolishLimit());
             }
             case SET_HISTORY_RECORDING -> RealmwrightData.setRecordsHistory(scepter, packet.first != 0);
+            case SET_ALLOW_REPLACEMENT -> RealmwrightData.setAllowsReplacement(scepter, packet.first != 0);
             case USE -> { }
             case RESUME -> { }
             case CANCEL -> cancel(player, scepter, packet.id);
@@ -438,7 +445,8 @@ public final class BuilderCommandPacket {
         MOVE_ANCHOR,
         SET_ANCHOR_PUBLIC,
         SET_ANCHOR_PLAYER,
-        CANCEL_BLUEPRINT
+        CANCEL_BLUEPRINT,
+        SET_ALLOW_REPLACEMENT
     }
 
     public record Target(BlockPos pos, Direction face, boolean inside) {

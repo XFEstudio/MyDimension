@@ -31,7 +31,7 @@ final class BuilderControlTargetController {
     @Nullable private BlockPos consumedPosition;
 
     void tick(Minecraft minecraft, double maximumDistance) {
-        if (!Screen.hasControlDown() || minecraft.screen != null
+        if (!Screen.hasControlDown() || Screen.hasAltDown() || minecraft.screen != null
                 || !BuilderClientServices.isHoldingRealmwright(minecraft)
                 || minecraft.player == null || minecraft.level == null) {
             reset();
